@@ -1,0 +1,9 @@
+# C/C++ 代码格式化配置（VSCode 的 C/C++ 扩展会自动读取）
+# 用法：打开要格式化的文件，按 Shift+Alt+F
+BasedOnStyle: Google
+Language: Cpp
+Standard: c++20
+IndentWidth: 2
+TabWidth: 2
+UseTab: Never
+ColumnLimit: 100

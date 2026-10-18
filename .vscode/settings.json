@@ -1,0 +1,14 @@
+{
+    "cmake.sourceDirectory": "D:/RM/Hello World/omni_skeleton/Chassis/third_party/dsp/CMSIS-DSP/Source",
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true,
+    "editor.detectIndentation": false,
+    "[cpp]": {
+        "editor.tabSize": 2,
+        "editor.insertSpaces": true
+    },
+    "[c]": {
+        "editor.tabSize": 2,
+        "editor.insertSpaces": true
+    }
+}
