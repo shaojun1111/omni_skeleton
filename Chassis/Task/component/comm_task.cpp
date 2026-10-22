@@ -1,20 +1,14 @@
-/*
- * @Author: miunoki 13567781025@163.com
- * @Date: 2026-09-19 15:11:39
- * @LastEditors: miunoki 13567781025@163.com
- * @LastEditTime: 2026-09-19 21:14:38
- * @FilePath: \omni_skeleton\Chassis\Task\component\comm_task.cpp
- * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
- */
 /**
  *******************************************************************************
  * @file      :comm_task.cpp
- * @brief     :
+ * @brief     :通讯任务（CAN 收发 + 喂狗）
  * @history   :
  *  Version     Date            Author          Note
- *  V0.9.0      yyyy-mm-dd      <author>        1. <note>
+ *  V1.0.0      2026-10-21      lishaojun       1. 初版：CAN 启动 + 电机发送
  *******************************************************************************
  * @attention :
+ *  1. CAN1/CAN2 分工是"工作假设"，基地确认后可能要改。
+ *  2. 4 个 M3508 共用同一个 8 字节 buffer，只发一次 0x200。
  *******************************************************************************
  *  Copyright (c) 2024 Hello World Team, Zhejiang University.
  *  All Rights Reserved.
@@ -23,24 +17,63 @@
 /* Includes ------------------------------------------------------------------*/
 #include "comm_task.hpp"
 
+#include "can.h"
+#include "iwdg.h"
+
+#include "HW_can.hpp"
+#include "ins_motor.hpp"
+#include "motor.hpp"
+
+/* 调试用：Ozone 里直接观察 4 个轮子的角度/速度（基地标定用） */
+volatile float g_dbg_angle[4] = {0.0f};
+volatile float g_dbg_vel[4] = {0.0f};
+
 /* Exported function definitions ---------------------------------------------*/
 void CommTaskInit(void) {
-  /* TODO【新人任务】:
-   * 通讯层一次性初始化：
-   *   1. 初始化 CAN 滤波器：inc/HW_can.hpp 的 CanFilter_Init(&hcan1) / CanFilter_Init(&hcan2)。
-   *   2. 启动遥控器串口空闲 + DMA 接收（18 字节 DBUS，见 inc/DT7.hpp 注释）：
-   *      调用 HAL_UARTEx_ReceiveToIdle_DMA 并记录接收缓冲区。
-   *   3. 启动 / 刷新独立看门狗 IWDG（inc/iwdg.h）。
-   */
+  /* ① 配置滤波器（全收） */
+  CanFilter_Init(&hcan1);
+  CanFilter_Init(&hcan2);
+
+  /* ② 启动 CAN 外设（漏了 = 完全不能收发） */
+  HAL_CAN_Start(&hcan1);
+  HAL_CAN_Start(&hcan2);
+
+  /* ③ 使能接收中断（漏了 = 收不到反馈） */
+  HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
+  HAL_CAN_ActivateNotification(&hcan2, CAN_IT_RX_FIFO1_MSG_PENDING);
+
+  /* TODO: 遥控器 UART 接收、IWDG 启动（第 6 课） */
 }
 
 void CommTask(void) {
-  /* TODO【新人任务】:
-   * 每个通讯周期（1ms）调用一次，把各模块 encode 出的 8 字节 CAN 帧发出去：
-   *   1. 遍历电机：调用 encode(data) 得到 8 字节 + tx_id()，再 CAN_Send_Msg 发出。
-   *   2. 双板通讯对象 encode 后同样发送。
-   *   3. 刷新 IWDG。
-   */
+  /* ---- 底盘：4 个 M3508 共用 0x200 ---- */
+  uint8_t motor_buf[8] = {0};
+  bool has_motor = false;
+
+  for (int i = 0; i < 4; ++i) {
+    auto *m = GetMotorWheel(i);
+    if (m != nullptr) {
+      m->encode(motor_buf);  // 每个电机只填自己那 2 字节
+      g_dbg_angle[i] = m->angle();
+      g_dbg_vel[i] = m->vel();
+      has_motor = true;
+    }
+  }
+
+  if (has_motor) {
+    CAN_Send_Msg(&hcan2, motor_buf, 0x200, 8);  // ⚠️ CAN2 为工作假设
+  }
+
+  /* ---- 双板帧（第 11 课再加） ---- */
+  // auto *comm = GetGimbalChassisComm();
+  // if (comm != nullptr) {
+  //   uint8_t comm_buf[8] = {0};
+  //   comm->encode(comm_buf);
+  //   CAN_Send_Msg(&hcan1, comm_buf, 0x210, 8);
+  // }
+
+  /* ---- 喂狗 ---- */
+  HAL_IWDG_Refresh(&hiwdg);
 }
 
 /* Private function definitions ----------------------------------------------*/

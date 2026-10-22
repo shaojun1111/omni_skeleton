@@ -6,6 +6,7 @@
  *  Version     Date            Author          Note
  *  V1.0.0      2026-09-18      Hello World     1. 考核骨架：CanFilter_Init + CAN_Send_Msg
  *                                                全量提供，接收分发回调掏空
+ *  V1.1.0      2026-10-22      lishaojun       1. 实现 FIFO0/FIFO1 接收分发（电机 + 双板帧）
  *******************************************************************************
  * @attention :
  *  接收中断回调 HAL_CAN_RxFifo0/1MsgPendingCallback 已在此预留，仅完成「取 8 字节 +
@@ -22,12 +23,22 @@
 
 #include "can.h"
 
+#include "ins_chassis_gimbal_comm.hpp"
+#include "ins_motor.hpp"
+#include "motor.hpp"
+
+#include "gimbal_chassis_comm.hpp"
+
 /* Private variables ---------------------------------------------------------*/
 static CAN_RxHeaderTypeDef rx_header1;
 static CAN_RxHeaderTypeDef rx_header2;
 static uint8_t can1_rx_data[8];
 static uint8_t can2_rx_data[8];
 static uint32_t p_tx_mailbox;
+
+/* 调试用：两路 CAN 的接收计数（Ozone 里观察，确认 CAN 口分工） */
+volatile uint32_t g_can1_rx_cnt = 0;
+volatile uint32_t g_can2_rx_cnt = 0;
 
 /* Exported function definitions ---------------------------------------------*/
 
@@ -81,12 +92,14 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
   if (hcan == &hcan1) {
     if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header1,
                              can1_rx_data) == HAL_OK) {
-      /* TODO【新人任务】: 在此按 rx_header1.StdId 路由 8 字节 can1_rx_data。
-       * 判定方法：把 StdId 与各电机的接收 ID（GetRxId）及双板通讯帧 ID 逐一比对：
-       *   - 命中某电机的接收 ID：调用该电机 decode(can1_rx_data) 解包反馈；
-       *   - 命中双板通讯帧 ID：调用自己的 GimbalChassisComm 解码；
-       *   - 都未命中：丢弃（返回前记得重新使能接收中断，见下方调用）。
-       */
+      ++g_can1_rx_cnt;
+      const uint32_t id = rx_header1.StdId;
+
+      /* 底盘板 CAN1 = 双板帧（工作假设，基地确认） */
+      auto *comm = GetGimbalChassisComm();
+      if (comm != nullptr && id == 0x211) {  // G2C: 云台 -> 底盘
+        comm->decode(can1_rx_data);
+      }
     }
   }
   HAL_CAN_ActivateNotification(hcan, CAN_IT_RX_FIFO0_MSG_PENDING);
@@ -103,7 +116,20 @@ void HAL_CAN_RxFifo1MsgPendingCallback(CAN_HandleTypeDef *hcan)
   if (hcan == &hcan2) {
     if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO1, &rx_header2,
                              can2_rx_data) == HAL_OK) {
-      /* TODO【新人任务】: 同 FIFO0，按 rx_header2.StdId 路由 8 字节 can2_rx_data。 */
+      ++g_can2_rx_cnt;
+      const uint32_t id = rx_header2.StdId;
+
+      /* 底盘板 CAN2 = M3508 反馈（工作假设，基地确认） */
+      for (int i = 0; i < 4; ++i) {
+        auto *m = GetMotorWheel(i);
+        if (m == nullptr) {
+          continue;
+        }
+        if (id == hello_world::motor::M3508::GetRxId(m->id())) {
+          m->decode(can2_rx_data);
+          break;
+        }
+      }
     }
   }
   HAL_CAN_ActivateNotification(hcan, CAN_IT_RX_FIFO1_MSG_PENDING);

@@ -1,14 +1,46 @@
 {
-    "cmake.sourceDirectory": "D:/RM/Hello World/omni_skeleton/Chassis/third_party/dsp/CMSIS-DSP/Source",
-    "editor.tabSize": 2,
-    "editor.insertSpaces": true,
-    "editor.detectIndentation": false,
-    "[cpp]": {
-        "editor.tabSize": 2,
-        "editor.insertSpaces": true
-    },
-    "[c]": {
-        "editor.tabSize": 2,
-        "editor.insertSpaces": true
-    }
+    "cmake.sourceDirectory": "${workspaceFolder}/Chassis",
+
+    "C_Cpp.default.compilerPath": "C:/Program Files (x86)/Arm GNU Toolchain arm-none-eabi/13.2 Rel1/bin/arm-none-eabi-gcc.exe",
+    "C_Cpp.default.intelliSenseMode": "gcc-arm",
+    "C_Cpp.default.cStandard": "c11",
+    "C_Cpp.default.cppStandard": "c++20",
+
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/Chassis/build/Debug/compile_commands.json",
+
+    "C_Cpp.default.includePath": [
+        "${workspaceFolder}/RobotComponents/component",
+        "${workspaceFolder}/Chassis/inc",
+        "${workspaceFolder}/Chassis/Core/Inc",
+        "${workspaceFolder}/Chassis/Instance/component",
+        "${workspaceFolder}/Chassis/RobotModules/component",
+        "${workspaceFolder}/Chassis/Task/component",
+        "${workspaceFolder}/Chassis/Drivers/STM32F4xx_HAL_Driver/Inc",
+        "${workspaceFolder}/Chassis/Drivers/STM32F4xx_HAL_Driver/Inc/Legacy",
+        "${workspaceFolder}/Chassis/Drivers/CMSIS/Device/ST/STM32F4xx/Include",
+        "${workspaceFolder}/Chassis/Drivers/CMSIS/Include",
+        "${workspaceFolder}/Chassis/third_party/Eigen3",
+        "${workspaceFolder}/Chassis/third_party/dsp/CMSIS-DSP/Include",
+        "${workspaceFolder}/Gimbal/inc",
+        "${workspaceFolder}/Gimbal/Core/Inc",
+        "${workspaceFolder}/Gimbal/Instance/component",
+        "${workspaceFolder}/Gimbal/RobotModules/component",
+        "${workspaceFolder}/Gimbal/Task/component",
+        "${workspaceFolder}/Gimbal/Drivers/STM32F4xx_HAL_Driver/Inc",
+        "${workspaceFolder}/Gimbal/Drivers/STM32F4xx_HAL_Driver/Inc/Legacy",
+        "${workspaceFolder}/Gimbal/Drivers/CMSIS/Device/ST/STM32F4xx/Include",
+        "${workspaceFolder}/Gimbal/Drivers/CMSIS/Include",
+        "${workspaceFolder}/Gimbal/third_party/Eigen3",
+        "${workspaceFolder}/Gimbal/third_party/dsp/CMSIS-DSP/Include"
+    ],
+
+    "C_Cpp.default.defines": [
+        "DEBUG",
+        "STM32F407xx",
+        "USE_HAL_DRIVER",
+        "STM32_THREAD_SAFE_STRATEGY=2",
+        "STM32_HAL_FILENAME=\"stm32f4xx_hal.h\"",
+        "ARM_MATH_MATRIX_CHECK",
+        "ARM_MATH_ROUNDING"
+    ]
 }
