@@ -28,6 +28,9 @@
 volatile float g_dbg_angle[4] = {0.0f};
 volatile float g_dbg_vel[4] = {0.0f};
 
+/* 调试计数器：CAN_Send_Msg 调了多少次 */
+volatile uint32_t g_send_cnt = 0;
+
 /* Exported function definitions ---------------------------------------------*/
 void CommTaskInit(void) {
   /* ① 配置滤波器（全收） */
@@ -38,8 +41,10 @@ void CommTaskInit(void) {
   HAL_CAN_Start(&hcan1);
   HAL_CAN_Start(&hcan2);
 
-  /* ③ 使能接收中断（漏了 = 收不到反馈） */
+  /* ③ 使能接收中断（四路全开，避免帧落到未使能的 FIFO） */
   HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
+  HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO1_MSG_PENDING);
+  HAL_CAN_ActivateNotification(&hcan2, CAN_IT_RX_FIFO0_MSG_PENDING);
   HAL_CAN_ActivateNotification(&hcan2, CAN_IT_RX_FIFO1_MSG_PENDING);
 
   /* TODO: 遥控器 UART 接收、IWDG 启动（第 6 课） */
@@ -62,6 +67,7 @@ void CommTask(void) {
 
   if (has_motor) {
     CAN_Send_Msg(&hcan2, motor_buf, 0x200, 8);  // ⚠️ CAN2 为工作假设
+    ++g_send_cnt;
   }
 
   /* ---- 双板帧（第 11 课再加） ---- */

@@ -40,6 +40,10 @@ static uint32_t p_tx_mailbox;
 volatile uint32_t g_can1_rx_cnt = 0;
 volatile uint32_t g_can2_rx_cnt = 0;
 
+/* 调试用：CAN 发送成功/失败计数 */
+volatile uint32_t g_tx_ok = 0;
+volatile uint32_t g_tx_fail = 0;
+
 /* Exported function definitions ---------------------------------------------*/
 
 void CanFilter_Init(CAN_HandleTypeDef *hcan)
@@ -78,7 +82,11 @@ void CAN_Send_Msg(CAN_HandleTypeDef *hcan, uint8_t *msg, uint32_t id,
   tx_header.IDE = CAN_ID_STD;
   tx_header.RTR = CAN_RTR_DATA;
   tx_header.DLC = len;
-  HAL_CAN_AddTxMessage(hcan, &tx_header, msg, &p_tx_mailbox);
+  if (HAL_CAN_AddTxMessage(hcan, &tx_header, msg, &p_tx_mailbox) == HAL_OK) {
+    ++g_tx_ok;
+  } else {
+    ++g_tx_fail;
+  }
 }
 
 /**
@@ -99,6 +107,24 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
       auto *comm = GetGimbalChassisComm();
       if (comm != nullptr && id == 0x211) {  // G2C: 云台 -> 底盘
         comm->decode(can1_rx_data);
+      }
+    }
+  } else if (hcan == &hcan2) {
+    /* 兼容：部分配置下 CAN2 的帧会落到 FIFO0 */
+    if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header2,
+                             can2_rx_data) == HAL_OK) {
+      ++g_can2_rx_cnt;
+      const uint32_t id = rx_header2.StdId;
+
+      for (int i = 0; i < 4; ++i) {
+        auto *m = GetMotorWheel(i);
+        if (m == nullptr) {
+          continue;
+        }
+        if (id == hello_world::motor::M3508::GetRxId(m->id())) {
+          m->decode(can2_rx_data);
+          break;
+        }
       }
     }
   }

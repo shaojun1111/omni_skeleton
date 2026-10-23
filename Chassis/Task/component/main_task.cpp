@@ -1,3 +1,11 @@
+/*
+ * @Author: shaojun1111 2424624237@qq.com
+ * @Date: 2026-09-19 15:36:50
+ * @LastEditors: shaojun1111 2424624237@qq.com
+ * @LastEditTime: 2026-10-22 18:47:03
+ * @FilePath: \omni_skeleton\Chassis\Task\component\main_task.cpp
+ * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+ */
 /**
  *******************************************************************************
  * @file      :main_task.cpp
@@ -30,6 +38,10 @@
  * ⚠️ 标定完必须改回 0，否则上电自转，违反安全红线！ */
 #define MOTOR_CALIB_TEST 0
 
+/* 调试计数器（Ozone 观察，确认调度链路） */
+volatile uint32_t g_tim6_cnt = 0;  /* TIM6 中断进了多少次 */
+volatile uint32_t g_comm_cnt = 0;  /* CommTask 调了多少次 */
+
 /* Exported function definitions ---------------------------------------------*/
 void MainTaskInit(void) {
   /* 阶段 1：先把通讯跑起来（第 6/7 课再补 IMU、遥控、Robot） */
@@ -40,23 +52,21 @@ void MainTask(void) {
 #if MOTOR_CALIB_TEST
   static int test_cnt = 0;
 
-  /* 每拍先把 4 个电机输入清零，避免上一个电机的值残留 */
-  for (int i = 0; i < 4; ++i) {
-    auto *m = GetMotorWheel(i);
-    if (m != nullptr) {
-      m->setInput(0.0f);
-    }
-  }
-
-  if (test_cnt < 8000) {                    // 总共 8 秒
-    const int idx = test_cnt / 2000;        // 0~3，每个电机 2 秒
-    const int phase = (test_cnt % 2000) / 1000;  // 0=正转 1 秒，1=反转 1 秒
-
-    auto *m = GetMotorWheel(idx);
-    if (m != nullptr) {
-      m->setInput(phase == 0 ? 1500.0f : -1500.0f);
+  if (test_cnt < 3000) {  // 4 轮同时正转 3 秒
+    for (int i = 0; i < 4; ++i) {
+      auto *m = GetMotorWheel(i);
+      if (m != nullptr) {
+        m->setInput(600.0f);
+      }
     }
     ++test_cnt;
+  } else {  // 3 秒后全部停
+    for (int i = 0; i < 4; ++i) {
+      auto *m = GetMotorWheel(i);
+      if (m != nullptr) {
+        m->setInput(0.0f);
+      }
+    }
   }
 #else
   /* TODO: 第 12 课接 GetRobot()->update() */
@@ -66,7 +76,9 @@ void MainTask(void) {
 /* Private function definitions ----------------------------------------------*/
 extern "C" void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
   if (htim == &htim6) {
+    ++g_tim6_cnt;
     MainTask();   // 先"算"
+    ++g_comm_cnt;
     CommTask();   // 后"发" + 喂狗
   }
 }
