@@ -58,6 +58,9 @@ set(COM_FLAGS
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${COM_FLAGS}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${COM_FLAGS} -Wno-reorder")
 
+# 使用 HAL 的 SysTick 作为时间基准（tick.cpp 需要）
+add_definitions(-DUSE_HAL_TICK)
+
 add_subdirectory(cmake/stm32cubemx)
 get_target_property(STM32_COMPILE_DEFINES stm32cubemx
                     INTERFACE_COMPILE_DEFINITIONS)
