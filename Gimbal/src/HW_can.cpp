@@ -6,12 +6,15 @@
  *  Version     Date            Author          Note
  *  V1.0.0      2026-09-18      Hello World     1. 考核骨架：CanFilter_Init + CAN_Send_Msg
  *                                                全量提供，接收分发回调掏空
+ *  V1.1.0      2026-10-27      lishaojun       1. 补全云台 DM4310 反馈分发（0x11/0x12）
+ *                                                与接收调试计数
  *******************************************************************************
  * @attention :
- *  接收中断回调 HAL_CAN_RxFifo0/1MsgPendingCallback 已在此预留，仅完成「取 8 字节 +
- *  再次使能接收中断」，具体「按帧 ID 分发」逻辑留给新人：
- *    - M3508 / DM 电机反馈：调用对应电机的 decode(can?_rx_data)
- *    - 双板通讯帧：调用新人自写的协议解码
+ *  1. 达妙反馈 ID = 电机 id + 0x10：pitch(id=1) → 0x11，yaw(id=2) → 0x12。
+ *  2. 两路 CAN 的 FIFO0/FIFO1 回调都做分发：底盘板实测 CAN2 的帧会落到 FIFO0，
+ *     云台板不做这个假设，四个分支全接。
+ *  3. 回调里必须调用 HAL_CAN_GetRxMessage 把帧取走，否则 FMP0 恒非 0，
+ *     中断会反复触发（HAL 不会自动清）。
  *******************************************************************************
  *  Copyright (c) 2024 Hello World Team, Zhejiang University.
  *  All Rights Reserved.
@@ -22,12 +25,28 @@
 
 #include "can.h"
 
+#include "ins_motor.hpp"
+
+/* Private macro -------------------------------------------------------------*/
+/* Private constants ---------------------------------------------------------*/
+/* 达妙反馈帧 ID（motor_DaMiao.hpp:338 GetRxId = 0x10 + id） */
+constexpr uint32_t kPitchRxId = 0x10U + kPitchMotorId;  // 0x11
+constexpr uint32_t kYawRxId = 0x10U + kYawMotorId;      // 0x12
+
 /* Private variables ---------------------------------------------------------*/
 static CAN_RxHeaderTypeDef rx_header1;
 static CAN_RxHeaderTypeDef rx_header2;
 static uint8_t can1_rx_data[8];
 static uint8_t can2_rx_data[8];
 static uint32_t p_tx_mailbox;
+
+/* 调试计数（Ozone Watched Data 观察，Refresh 需手动改 100ms） */
+volatile uint32_t g_can1_rx_cnt = 0;  ///< CAN1 收到的帧数
+volatile uint32_t g_can2_rx_cnt = 0;  ///< CAN2 收到的帧数
+volatile uint32_t g_dm_rx_cnt = 0;    ///< 命中的达妙反馈帧数
+
+/* Private function prototypes -----------------------------------------------*/
+static void DispatchRxFrame(const CAN_RxHeaderTypeDef *header, uint8_t data[8]);
 
 /* Exported function definitions ---------------------------------------------*/
 
@@ -71,40 +90,77 @@ void CAN_Send_Msg(CAN_HandleTypeDef *hcan, uint8_t *msg, uint32_t id,
 }
 
 /**
- * @brief   CAN1 FIFO0 接收中断回调（新人填写分发逻辑）
+ * @brief   CAN1 FIFO0 接收中断回调
  * @param   hcan: CAN 句柄
  * @retval  None
- * @note    此处只取了 8 字节并重新使能接收中断，具体分发由新人实现
+ * @note    同时兼容 CAN2 的帧落到 FIFO0（底盘板实测行为）
  */
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
   if (hcan == &hcan1) {
     if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header1,
                              can1_rx_data) == HAL_OK) {
-      /* TODO【新人任务】: 在此按 rx_header1.StdId 路由 8 字节 can1_rx_data。
-       * 判定方法：把 StdId 与各电机的接收 ID（GetRxId）及双板通讯帧 ID 逐一比对：
-       *   - 命中某电机的接收 ID：调用该电机 decode(can1_rx_data) 解包反馈；
-       *   - 命中双板通讯帧 ID：调用自己的 GimbalChassisComm 解码；
-       *   - 都未命中：丢弃（返回前记得重新使能接收中断，见下方调用）。
-       */
+      g_can1_rx_cnt = g_can1_rx_cnt + 1;
+      DispatchRxFrame(&rx_header1, can1_rx_data);
+    }
+  } else if (hcan == &hcan2) {
+    if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header2,
+                             can2_rx_data) == HAL_OK) {
+      g_can2_rx_cnt = g_can2_rx_cnt + 1;
+      DispatchRxFrame(&rx_header2, can2_rx_data);
     }
   }
   HAL_CAN_ActivateNotification(hcan, CAN_IT_RX_FIFO0_MSG_PENDING);
 }
 
 /**
- * @brief   CAN2 FIFO1 接收中断回调（新人填写分发逻辑）
+ * @brief   CAN2 FIFO1 接收中断回调
  * @param   hcan: CAN 句柄
  * @retval  None
- * @note    同上，具体分发由新人实现
+ * @note    同时兼容 CAN1 的帧落到 FIFO1
  */
 void HAL_CAN_RxFifo1MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
-  if (hcan == &hcan2) {
+  if (hcan == &hcan1) {
+    if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO1, &rx_header1,
+                             can1_rx_data) == HAL_OK) {
+      g_can1_rx_cnt = g_can1_rx_cnt + 1;
+      DispatchRxFrame(&rx_header1, can1_rx_data);
+    }
+  } else if (hcan == &hcan2) {
     if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO1, &rx_header2,
                              can2_rx_data) == HAL_OK) {
-      /* TODO【新人任务】: 同 FIFO0，按 rx_header2.StdId 路由 8 字节 can2_rx_data。 */
+      g_can2_rx_cnt = g_can2_rx_cnt + 1;
+      DispatchRxFrame(&rx_header2, can2_rx_data);
     }
   }
   HAL_CAN_ActivateNotification(hcan, CAN_IT_RX_FIFO1_MSG_PENDING);
+}
+
+/* Private function definitions ----------------------------------------------*/
+/**
+ * @brief   按标准帧 ID 把 8 字节分发给对应的上层对象
+ * @param   header: 本帧的接收头（提供 StdId）
+ * @param   data:   本帧的 8 字节数据
+ * @retval  None
+ * @note    未命中的 ID 直接丢弃；第 11 课在这里加 0x210（C2G）分支
+ */
+static void DispatchRxFrame(const CAN_RxHeaderTypeDef *header, uint8_t data[8])
+{
+  const uint32_t id = header->StdId;
+
+  if (id == kPitchRxId) {
+    auto *pitch = GetMotorPitch();
+    if (pitch != nullptr) {
+      pitch->decode(data);
+      g_dm_rx_cnt = g_dm_rx_cnt + 1;
+    }
+  } else if (id == kYawRxId) {
+    auto *yaw = GetMotorYaw();
+    if (yaw != nullptr) {
+      yaw->decode(data);
+      g_dm_rx_cnt = g_dm_rx_cnt + 1;
+    }
+  }
+  /* TODO【第 11 课】: 0x210 = C2G 双板帧 → GetGimbalChassisComm()->decode(data) */
 }

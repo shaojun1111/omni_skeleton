@@ -24,7 +24,15 @@
 #include "DT7.hpp"
 #include "HW_can.hpp"
 #include "ins_comm.hpp"
+#include "ins_motor.hpp"
 #include "offline_checker.hpp"
+
+/* Private macro -------------------------------------------------------------*/
+/* 云台电机所在 CAN 总线。
+ * ⚠️ 基地② 用 g_can1_rx_cnt / g_can2_rx_cnt 确认后改这里：
+ *    哪路计数随电机反馈增长，就把这里改成那一路。
+ *    默认 hcan1（与底盘板对称：底盘 CAN2=电机，云台 CAN1=电机）。 */
+#define GIMBAL_MOTOR_CAN (&hcan1)
 
 /* Private variables ---------------------------------------------------------*/
 /* DBUS 接收缓冲（18 字节） */
@@ -43,6 +51,11 @@ volatile uint8_t g_dbg_rc_l_sw = 0;
 volatile uint8_t g_dbg_rc_r_sw = 0;
 volatile uint8_t g_dbg_rc_offline = 1;
 volatile uint32_t g_dbus_rx_cnt = 0;
+volatile uint32_t g_gimbal_tx_cnt = 0;  ///< 云台电机帧发送次数（2 帧/周期）
+volatile uint32_t g_gimbal_tx_fail = 0; ///< encode() 失败次数（非 0 说明模式未就绪）
+
+/* Private function prototypes -----------------------------------------------*/
+static void SendGimbalMotors(void);
 
 /* Exported function definitions ---------------------------------------------*/
 void CommTaskInit(void) {
@@ -75,6 +88,11 @@ void CommTask(void) {
   }
   g_dbg_rc_offline = g_rc_offline.isOffline() ? 1 : 0;
 
+  /* ---- 云台电机：每周期 encode + 发送 ---- */
+  /* 达妙上电默认失能，encode() 内部会自动发 0xFC 使能命令，
+   * 收到 kMotorEnabled 反馈后才改为发 MIT 位置帧。 */
+  SendGimbalMotors();
+
   /* ---- 双板帧（第 11 课再加）---- */
 
   /* ---- 喂狗 ---- */
@@ -82,6 +100,40 @@ void CommTask(void) {
 }
 
 /* Private function definitions ----------------------------------------------*/
+/**
+ * @brief 编码并发送两路云台电机指令
+ * @retval None
+ * @note  1. 达妙发送 ID = 电机 id（MIT 帧与命令帧同 ID，见 motor_DaMiao.cpp:350）。
+ *        2. encode() 返回 false 表示控制模式未就绪（上电瞬间），此时不发帧。
+ *        3. 每周期必须调用：使能命令也是靠它发出去的。
+ */
+static void SendGimbalMotors(void) {
+  uint8_t buf[8] = {0};
+
+  /* pitch: id = 1 */
+  auto *pitch = GetMotorPitch();
+  if (pitch != nullptr) {
+    if (pitch->encode(buf)) {
+      CAN_Send_Msg(GIMBAL_MOTOR_CAN, buf, static_cast<uint32_t>(kPitchMotorId),
+                   8);
+      g_gimbal_tx_cnt = g_gimbal_tx_cnt + 1;
+    } else {
+      g_gimbal_tx_fail = g_gimbal_tx_fail + 1;
+    }
+  }
+
+  /* yaw: id = 2 */
+  auto *yaw = GetMotorYaw();
+  if (yaw != nullptr) {
+    if (yaw->encode(buf)) {
+      CAN_Send_Msg(GIMBAL_MOTOR_CAN, buf, static_cast<uint32_t>(kYawMotorId), 8);
+      g_gimbal_tx_cnt = g_gimbal_tx_cnt + 1;
+    } else {
+      g_gimbal_tx_fail = g_gimbal_tx_fail + 1;
+    }
+  }
+}
+
 /**
  * @brief UART 空闲/半满回调：收满 18 字节后解码 DBUS
  * @note  该回调是 HAL 弱函数，必须 extern "C"
