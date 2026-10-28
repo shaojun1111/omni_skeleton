@@ -5,6 +5,7 @@
  * @history   :
  *  Version     Date            Author          Note
  *  V1.0.0      2026-10-26      lishaojun       1. 初版：最小调度 + 通讯启动
+ *  V1.1.0      2026-10-28      lishaojun       2. 接入 IMU：上电初始化 + 每 1ms 更新
  *******************************************************************************
  * @attention :
  *  1. MainTaskInit() 由 main() 在 while(1) 之前调用一次。
@@ -20,14 +21,44 @@
 
 #include "tim.h"
 
+#include "ins_imu.hpp"
+
+#include "imu.hpp"
+
+/* Private macro -------------------------------------------------------------*/
+/* Private constants ---------------------------------------------------------*/
+/* Private types -------------------------------------------------------------*/
+/* Private variables ---------------------------------------------------------*/
+/* 调试变量（Ozone Watched Data 观察，Refresh 需手动改 100ms） */
+volatile float g_dbg_roll = 0.0f;         ///< 横滚角，rad
+volatile float g_dbg_pitch = 0.0f;        ///< 俯仰角，rad
+volatile float g_dbg_yaw = 0.0f;          ///< 偏航角，rad
+volatile uint8_t g_dbg_imu_calibrated = 0; ///< 0=标定中 1=完成
+volatile uint8_t g_dbg_imu_err = 0;        ///< BMI088 初始化错误位
+
+/* External variables --------------------------------------------------------*/
+/* Private function prototypes -----------------------------------------------*/
 /* Exported function definitions ---------------------------------------------*/
 void MainTaskInit(void) {
-  /* 阶段 1：先把通讯跑起来（后续再补 IMU、Robot） */
+  /* IMU 先初始化（含阻塞式 SPI 配置），再启动通讯 */
+  auto *imu = GetImu();
+  if (imu != nullptr) {
+    imu->init();
+  }
+
   CommTaskInit();
 }
 
 void MainTask(void) {
-  /* TODO: 第 12 课接 GetRobot()->update() */
+  auto *imu = GetImu();
+  if (imu != nullptr) {
+    imu->update();
+    g_dbg_roll = imu->roll();
+    g_dbg_pitch = imu->pitch();
+    g_dbg_yaw = imu->yaw();
+    g_dbg_imu_calibrated = imu->isCalibrated() ? 1 : 0;
+    g_dbg_imu_err = imu->errState();
+  }
 }
 
 /* Private function definitions ----------------------------------------------*/
