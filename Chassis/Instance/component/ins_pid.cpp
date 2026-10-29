@@ -1,12 +1,15 @@
 /**
  *******************************************************************************
  * @file      :ins_pid.cpp
- * @brief     :
+ * @brief     :PID 实例（四路轮速环）
  * @history   :
  *  Version     Date            Author          Note
  *  V0.9.0      yyyy-mm-dd      <author>        1. <note>
+ *  V1.0.0      2026-10-29      lishaojun       1. 实现 GetPidMotorWheel()
  *******************************************************************************
  * @attention :
+ *  1. 输出单位为 M3508 电流码值（±16384 对应 ±20A）。
+ *  2. 参数为初值，基地按实际响应调整。
  *******************************************************************************
  *  Copyright (c) 2024 Hello World Team, Zhejiang University.
  *  All Rights Reserved.
@@ -14,25 +17,38 @@
  */
 /* Includes ------------------------------------------------------------------*/
 #include "ins_pid.hpp"
+
+#include "pid.hpp"
 /* Private macro -------------------------------------------------------------*/
 /* Private constants ---------------------------------------------------------*/
+namespace {
+
+/* 速度环参数：kp 单位 码值/(rad/s)，ki 单位 码值/(rad/s·s) */
+constexpr float kKp = 1500.0f;
+constexpr float kKi = 2000.0f;
+constexpr float kKd = 0.0f;
+constexpr float kOutLim = 8000.0f;
+constexpr float kILim = 8000.0f;
+
+}  // namespace
+
 /* Private types -------------------------------------------------------------*/
 /* Private variables ---------------------------------------------------------*/
 /* External variables --------------------------------------------------------*/
 /* Private function prototypes -----------------------------------------------*/
 /* Exported function definitions ---------------------------------------------*/
 hello_world::pid::Pid *GetPidMotorWheel(int idx) {
-  /* TODO【新人任务】:
-   * 返回对应的 PID 单例。
-   *
-   * 你要做：
-   *   1. 先自己实现一个 PID 类（位置式 / 增量式，含 Kp/Ki/Kd、积分限幅、输出限幅），
-   *      建议单独新建文件，类名放到 hello_world::pid 命名空间并命名为 Pid（或改这里
-   *      的返回类型以匹配你的类名）。
-   *   2. 静态定义各控制回路的 PID 对象并整定参数（考核会检查稳 / 快 / 无超调）。
-   */
-  (void)idx;
-  return nullptr;
+  static hello_world::pid::Pid pids[4] = {
+      hello_world::pid::Pid(kKp, kKi, kKd, kOutLim, kILim),
+      hello_world::pid::Pid(kKp, kKi, kKd, kOutLim, kILim),
+      hello_world::pid::Pid(kKp, kKi, kKd, kOutLim, kILim),
+      hello_world::pid::Pid(kKp, kKi, kKd, kOutLim, kILim),
+  };
+
+  if (idx < 0 || idx >= 4) {
+    return nullptr;
+  }
+  return &pids[idx];
 }
 
 /* Private function definitions ----------------------------------------------*/
