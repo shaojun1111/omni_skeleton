@@ -43,6 +43,12 @@ class Chassis
   void setTarget(const ChassisState& target);
 
   /**
+   * @brief 设置云台相对车头的偏航角
+   * @param delta 单位 rad，逆时针为正；内部归一化到 [-π, π)
+   */
+  void setDelta(float delta);
+
+  /**
    * @brief 周期任务：逆解 → 限幅 → 速度环 → setInput
    * @note  每 1ms 调用一次
    */
@@ -59,9 +65,13 @@ class Chassis
     return (idx >= 0 && idx < 4) ? wheel_speed_[idx] : 0.0f;
   }
 
+  /* 调试用：读取当前 δ */
+  float delta(void) const { return delta_; }
+
  private:
   ChassisState target_;
   float wheel_speed_[4] = {0.0f, 0.0f, 0.0f, 0.0f};  ///< [RF, RB, LB, LF]，m/s
+  float delta_ = 0.0f;  ///< 云台相对车头的偏航角，rad
 };
 
 }  // namespace robot

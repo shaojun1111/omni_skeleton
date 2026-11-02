@@ -33,6 +33,8 @@ namespace
 
 constexpr float kDt = 0.001f;           ///< 控制周期，s
 constexpr float kMaxWheelSpeed = 3.0f;  ///< 轮缘速度上限，m/s
+/* δ 符号：实测车体方向与预期相反时改成 -1.0f */
+constexpr float kDeltaSign = 1.0f;
 
 }  // namespace
 
@@ -47,6 +49,7 @@ namespace robot
 void Chassis::init(void)
 {
   target_ = ChassisState{};
+  delta_ = 0.0f;
 
   for (int i = 0; i < 4; ++i) {
     wheel_speed_[i] = 0.0f;
@@ -68,6 +71,11 @@ void Chassis::setTarget(const ChassisState& target)
   target_ = target;
 }
 
+void Chassis::setDelta(float delta)
+{
+  delta_ = hello_world::AngleNormRad(delta);
+}
+
 void Chassis::update(void)
 {
   auto *solver = GetChassisIkSolver();
@@ -75,8 +83,14 @@ void Chassis::update(void)
     return;
   }
 
-  /* 1. 逆解：车体速度 → 四轮轮缘速度 */
-  solver->solve(target_.vx, target_.vy, target_.w, wheel_speed_);
+  /* 1. 云台系 → 车体系 */
+  float vx_b = 0.0f;
+  float vy_b = 0.0f;
+  hello_world::chassis_ik_solver::rotateToBody(
+      target_.vx, target_.vy, kDeltaSign * delta_, &vx_b, &vy_b);
+
+  /* 2. 逆解：车体速度 → 四轮轮缘速度 */
+  solver->solve(vx_b, vy_b, target_.w, wheel_speed_);
 
   for (int i = 0; i < 4; ++i) {
     auto *motor = GetMotorWheel(i);
@@ -85,17 +99,17 @@ void Chassis::update(void)
       continue;
     }
 
-    /* 2. 限幅 */
+    /* 3. 限幅 */
     const float v = hello_world::Bound(wheel_speed_[i], -kMaxWheelSpeed,
                                        kMaxWheelSpeed);
 
-    /* 3. 轮缘速度 → 轮子角速度 */
+    /* 4. 轮缘速度 → 轮子角速度 */
     const float omega_target = v / hello_world::chassis_ik_solver::kR;
 
-    /* 4. 速度环：目标角速度 vs 反馈角速度 → 电流码值 */
+    /* 5. 速度环：目标角速度 vs 反馈角速度 → 电流码值 */
     const float current = pid->calc(omega_target, motor->vel(), kDt);
 
-    /* 5. 写回电机对象，由 CommTask 的 encode() 发出 */
+    /* 6. 写回电机对象，由 CommTask 的 encode() 发出 */
     motor->setInput(current);
   }
 }

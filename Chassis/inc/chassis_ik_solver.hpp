@@ -5,6 +5,7 @@
  * @history   :
  *  Version     Date            Author          Note
  *  V1.0.0      2026-10-29      lishaojun       1. 初版：45° 滚子麦轮逆解
+ *  V1.1.0      2026-11-02      lishaojun       2. 加云端系 → 车体系旋转（可 PC 单测）
  *******************************************************************************
  * @attention :
  *  1. 纯数学，无硬件依赖，可直接在 PC 上单测。
@@ -20,6 +21,7 @@
 #define CHASSIS_INC_CHASSIS_IK_SOLVER_HPP_
 
 /* Includes ------------------------------------------------------------------*/
+#include <cmath>
 
 /* Exported macro ------------------------------------------------------------*/
 /* Exported constants --------------------------------------------------------*/
@@ -46,6 +48,24 @@ class ChassisIkSolver
    */
   void solve(float vx, float vy, float w, float v_wheel[4]) const;
 };
+
+/**
+ * @brief 把云台系的平移速度旋转到车体系
+ * @param vx_g 云台系前进速度，m/s
+ * @param vy_g 云台系左移速度，m/s
+ * @param delta 云台相对车头的偏航角，逆时针为正，rad
+ * @param vx_b 输出：车体系 x 速度
+ * @param vy_b 输出：车体系 y 速度
+ * @note  绕 z 轴旋转，w 不参与
+ */
+inline void rotateToBody(float vx_g, float vy_g, float delta, float* vx_b,
+                         float* vy_b)
+{
+  const float c = std::cos(delta);
+  const float s = std::sin(delta);
+  *vx_b = vx_g * c - vy_g * s;
+  *vy_b = vx_g * s + vy_g * c;
+}
 
 }  // namespace chassis_ik_solver
 }  // namespace hello_world
