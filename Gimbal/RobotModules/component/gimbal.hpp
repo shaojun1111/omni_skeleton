@@ -1,12 +1,16 @@
 /**
  *******************************************************************************
  * @file      :gimbal.hpp
- * @brief     :
+ * @brief     :云台运动模块（yaw / pitch 两轴位置环）
  * @history   :
  *  Version     Date            Author          Note
  *  V0.9.0      yyyy-mm-dd      <author>        1. <note>
+ *  V1.0.0      2026-11-08      lishaojun       1. 初版：角度差 → PID → MIT 力矩
  *******************************************************************************
  * @attention :
+ *  1. yaw 连续旋转，目标角在 update() 里投影到当前圈再交给 PID。
+ *  2. pitch 在 setTarget() 里做软件限位，防止顶结构。
+ *  3. update() 每 1ms 调用一次。
  *******************************************************************************
  *  Copyright (c) 2024 Hello World Team, Zhejiang University.
  *  All Rights Reserved.
@@ -17,23 +21,57 @@
 #define GIMBAL_ROBOT_MODULES_GIMBAL_HPP_
 
 /* Includes ------------------------------------------------------------------*/
+#include "module_state.hpp"
+
 /* Exported macro ------------------------------------------------------------*/
 /* Exported constants --------------------------------------------------------*/
 /* Exported types ------------------------------------------------------------*/
+namespace robot
+{
+
+class Gimbal
+{
+ public:
+  /**
+   * @brief 初始化：目标角设为当前反馈角、复位 PID、输出 0 力矩
+   */
+  void init(void);
+
+  /**
+   * @brief 下发目标关节角
+   * @param target yaw / pitch，单位 rad
+   * @note  pitch 在内部钳到 [kPitchMin, kPitchMax]
+   */
+  void setTarget(const GimbalState& target);
+
+  /**
+   * @brief 周期任务：读反馈 → 算误差 → PID → setMitInput
+   * @note  每 1ms 调用一次
+   */
+  void update(void);
+
+  /**
+   * @brief 立即停止：输出 0 力矩、PID 复位、目标回到当前角
+   */
+  void stop(void);
+
+  /* 调试用：最近一次反馈与输出 */
+  float yawFeedback(void) const { return yaw_fb_; }
+  float pitchFeedback(void) const { return pitch_fb_; }
+  float yawOutput(void) const { return yaw_out_; }
+  float pitchOutput(void) const { return pitch_out_; }
+
+ private:
+  GimbalState target_{};
+  float yaw_fb_ = 0.0f;     ///< yaw 反馈角，rad
+  float pitch_fb_ = 0.0f;   ///< pitch 反馈角，rad
+  float yaw_out_ = 0.0f;    ///< yaw 输出力矩，N·m
+  float pitch_out_ = 0.0f;  ///< pitch 输出力矩，N·m
+};
+
+}  // namespace robot
+
 /* Exported variables --------------------------------------------------------*/
 /* Exported function prototypes ----------------------------------------------*/
 
-/* ============================================================================
- * 【新人任务】声明云台运动模块类 Gimbal（namespace robot）。
- *
- * 你要做：
- *   1. 设计 Gimbal 类，实现 yaw / pitch 两个关节的关节空间位置控制（位置环）。
- *   2. 读入云台目标角度（来自遥控器 / 键鼠 / 底盘经双板通讯传来的期望值），输出
- *      yaw / pitch 电机的控制量。
- *   3. 处理 yaw 轴 360° 连续旋转的角度回绕，pitch 轴用软件限位防堵转。
- *
- * 约束 / 提示：
- *   - yaw / pitch 均为达妙 DM-J4310 电机，反馈角度 / 指令接口见 inc/motor_DaMiao.hpp。
- *   - 位置环 PID 由你自己实现（PID 类），本模块只负责调用。
- * ==========================================================================*/
 #endif /* GIMBAL_ROBOT_MODULES_GIMBAL_HPP_ */

@@ -14,6 +14,8 @@
  */
 /* Includes ------------------------------------------------------------------*/
 #include "ins_robot.hpp"
+
+#include "gimbal.hpp"
 /* Private macro -------------------------------------------------------------*/
 /* Private constants ---------------------------------------------------------*/
 /* Private types -------------------------------------------------------------*/
@@ -37,11 +39,8 @@ robot::Robot *GetRobot() {
 }
 
 robot::Gimbal *GetGimbal() {
-  /* TODO【新人任务】:
-   * 返回 Gimbal 模块 robot::Gimbal 单例，做法同 GetRobot()。
-   * robot::Gimbal 类定义由你在 RobotModules/component/gimbal.hpp 补全。
-   */
-  return nullptr;
+  static robot::Gimbal gimbal;
+  return &gimbal;
 }
 
 /* Private function definitions ----------------------------------------------*/
