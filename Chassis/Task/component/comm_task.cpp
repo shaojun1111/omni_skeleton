@@ -21,6 +21,10 @@
 #include "iwdg.h"
 
 #include "HW_can.hpp"
+#include "gimbal_chassis_comm.hpp"
+#include "imu.hpp"
+#include "ins_chassis_gimbal_comm.hpp"
+#include "ins_imu.hpp"
 #include "ins_motor.hpp"
 #include "motor.hpp"
 
@@ -30,6 +34,8 @@ volatile float g_dbg_vel[4] = {0.0f};
 
 /* 调试计数器：CAN_Send_Msg 调了多少次 */
 volatile uint32_t g_send_cnt = 0;
+volatile uint32_t g_comm_tx_cnt = 0;   ///< 双板帧发送次数
+volatile uint32_t g_comm_tx_fail = 0;  ///< 双板帧发送失败次数
 
 /* Exported function definitions ---------------------------------------------*/
 void CommTaskInit(void) {
@@ -70,13 +76,22 @@ void CommTask(void) {
     ++g_send_cnt;
   }
 
-  /* ---- 双板帧（第 11 课再加） ---- */
-  // auto *comm = GetGimbalChassisComm();
-  // if (comm != nullptr) {
-  //   uint8_t comm_buf[8] = {0};
-  //   comm->encode(comm_buf);
-  //   CAN_Send_Msg(&hcan1, comm_buf, 0x210, 8);
-  // }
+  /* ---- 双板帧：C2G（0x210），底盘 → 云台 ---- */
+  auto *comm = GetGimbalChassisComm();
+  if (comm != nullptr) {
+    auto *imu = GetImu();
+    if (imu != nullptr) {
+      comm->chassis_data().chassis_yaw = imu->yaw();
+      comm->chassis_data().imu_ok = imu->isCalibrated();
+    }
+    /* 第 12 课：chassis_ok / life_state 改由状态机写入 */
+    comm->chassis_data().chassis_ok = true;
+
+    uint8_t comm_buf[8] = {0};
+    comm->encode(comm_buf);
+    CAN_Send_Msg(&hcan1, comm_buf, comm->tx_id(), 8);
+    g_comm_tx_cnt = g_comm_tx_cnt + 1;
+  }
 
   /* ---- 喂狗 ---- */
   HAL_IWDG_Refresh(&hiwdg);

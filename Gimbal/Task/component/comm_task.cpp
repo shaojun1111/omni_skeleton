@@ -23,7 +23,11 @@
 
 #include "DT7.hpp"
 #include "HW_can.hpp"
+#include "gimbal_chassis_comm.hpp"
+#include "imu.hpp"
+#include "ins_chassis_gimbal_comm.hpp"
 #include "ins_comm.hpp"
+#include "ins_imu.hpp"
 #include "ins_motor.hpp"
 #include "offline_checker.hpp"
 
@@ -33,6 +37,10 @@
  *    哪路计数随电机反馈增长，就把这里改成那一路。
  *    默认 hcan1（与底盘板对称：底盘 CAN2=电机，云台 CAN1=电机）。 */
 #define GIMBAL_MOTOR_CAN (&hcan1)
+
+/* 板间通讯所在 CAN 总线：与电机总线相反。
+ * 底盘板实测 CAN2=电机、CAN1=板间；云台板按对称假设 CAN1=电机、CAN2=板间。 */
+#define GIMBAL_COMM_CAN (&hcan2)
 
 /* Private variables ---------------------------------------------------------*/
 /* DBUS 接收缓冲（18 字节） */
@@ -53,6 +61,8 @@ volatile uint8_t g_dbg_rc_offline = 1;
 volatile uint32_t g_dbus_rx_cnt = 0;
 volatile uint32_t g_gimbal_tx_cnt = 0;  ///< 云台电机帧发送次数（2 帧/周期）
 volatile uint32_t g_gimbal_tx_fail = 0; ///< encode() 失败次数（非 0 说明模式未就绪）
+volatile uint32_t g_comm_tx_cnt = 0;    ///< 双板帧发送次数
+volatile float g_dbg_delta = 0.0f;      ///< 发给底盘的 delta（调试）
 
 /* Private function prototypes -----------------------------------------------*/
 static void SendGimbalMotors(void);
@@ -93,7 +103,30 @@ void CommTask(void) {
    * 收到 kMotorEnabled 反馈后才改为发 MIT 位置帧。 */
   SendGimbalMotors();
 
-  /* ---- 双板帧（第 11 课再加）---- */
+  /* ---- 双板帧：G2C（0x211），云台 → 底盘 ---- */
+  auto *comm = GetGimbalChassisComm();
+  if (comm != nullptr) {
+    auto *imu = GetImu();
+    const float gimbal_yaw = (imu != nullptr) ? imu->yaw() : 0.0f;
+
+    /* delta = 云台朝向 − 车体朝向。
+     * 对方离线时归零：此时 chassis_yaw 还是上次的值（或初值 0），
+     * 拿来当基准会让底盘朝错误方向平移。 */
+    comm->gimbal_data().delta =
+        comm->isOffline()
+            ? 0.0f
+            : (gimbal_yaw - comm->chassis_data().chassis_yaw);
+    comm->gimbal_data().remote_ok = !g_rc_offline.isOffline();
+    /* 第 12 课：gimbal_ok / estop / mode 改由状态机写入 */
+    comm->gimbal_data().gimbal_ok = true;
+    /* vx / vy / spin：第 14 课由遥控映射填入，现在保持 0 */
+
+    uint8_t comm_buf[8] = {0};
+    comm->encode(comm_buf);
+    CAN_Send_Msg(GIMBAL_COMM_CAN, comm_buf, comm->tx_id(), 8);
+    g_comm_tx_cnt = g_comm_tx_cnt + 1;
+    g_dbg_delta = comm->gimbal_data().delta;
+  }
 
   /* ---- 喂狗 ---- */
   HAL_IWDG_Refresh(&hiwdg);

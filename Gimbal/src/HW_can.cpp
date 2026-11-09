@@ -27,6 +27,9 @@
 
 #include "ins_motor.hpp"
 
+#include "gimbal_chassis_comm.hpp"
+#include "ins_chassis_gimbal_comm.hpp"
+
 /* Private macro -------------------------------------------------------------*/
 /* Private constants ---------------------------------------------------------*/
 /* 达妙反馈帧 ID（motor_DaMiao.hpp:338 GetRxId = 0x10 + id） */
@@ -44,6 +47,7 @@ static uint32_t p_tx_mailbox;
 volatile uint32_t g_can1_rx_cnt = 0;  ///< CAN1 收到的帧数
 volatile uint32_t g_can2_rx_cnt = 0;  ///< CAN2 收到的帧数
 volatile uint32_t g_dm_rx_cnt = 0;    ///< 命中的达妙反馈帧数
+volatile uint32_t g_comm_rx_cnt = 0;  ///< 命中的双板帧数（0x210）
 
 /* Private function prototypes -----------------------------------------------*/
 static void DispatchRxFrame(const CAN_RxHeaderTypeDef *header, uint8_t data[8]);
@@ -161,6 +165,12 @@ static void DispatchRxFrame(const CAN_RxHeaderTypeDef *header, uint8_t data[8])
       yaw->decode(data);
       g_dm_rx_cnt = g_dm_rx_cnt + 1;
     }
+  } else if (id == 0x210) {
+    /* C2G（0x210）：底盘 → 云台，双板状态帧 */
+    auto *comm = GetGimbalChassisComm();
+    if (comm != nullptr) {
+      comm->decode(data);
+      g_comm_rx_cnt = g_comm_rx_cnt + 1;
+    }
   }
-  /* TODO【第 11 课】: 0x210 = C2G 双板帧 → GetGimbalChassisComm()->decode(data) */
 }
