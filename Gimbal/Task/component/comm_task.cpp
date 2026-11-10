@@ -46,8 +46,7 @@
 /* DBUS 接收缓冲（18 字节） */
 static uint8_t g_dbus_buf[hello_world::remote_control::kRcRxDataLen];
 
-/* 遥控离线检测：100ms 未收到新帧即离线（初始为离线） */
-static hello_world::OfflineChecker g_rc_offline(100);
+/* 遥控离线检测移到 ins_comm.cpp，Robot 通过 GetRemoteOffline() 读取 */
 
 /* 调试变量（Ozone 观察） */
 volatile float g_dbg_rc_lv = 0.0f;
@@ -96,7 +95,9 @@ void CommTask(void) {
     g_dbg_rc_l_sw = static_cast<uint8_t>(rc->rc_l_switch());
     g_dbg_rc_r_sw = static_cast<uint8_t>(rc->rc_r_switch());
   }
-  g_dbg_rc_offline = g_rc_offline.isOffline() ? 1 : 0;
+  auto *rc_offline = GetRemoteOffline();
+  g_dbg_rc_offline =
+      (rc_offline != nullptr && rc_offline->isOffline()) ? 1 : 0;
 
   /* ---- 云台电机：每周期 encode + 发送 ---- */
   /* 达妙上电默认失能，encode() 内部会自动发 0xFC 使能命令，
@@ -116,9 +117,12 @@ void CommTask(void) {
         comm->isOffline()
             ? 0.0f
             : (gimbal_yaw - comm->chassis_data().chassis_yaw);
-    comm->gimbal_data().remote_ok = !g_rc_offline.isOffline();
-    /* 第 12 课：gimbal_ok / estop / mode 改由状态机写入 */
-    comm->gimbal_data().gimbal_ok = true;
+    comm->gimbal_data().remote_ok =
+        !(GetRemoteOffline() != nullptr && GetRemoteOffline()->isOffline());
+    /* 自检通过 = IMU 零漂完成。不能写成“在 Working”，否则两板互相等待。 */
+    if (imu != nullptr) {
+      comm->gimbal_data().gimbal_ok = imu->isCalibrated();
+    }
     /* vx / vy / spin：第 14 课由遥控映射填入，现在保持 0 */
 
     uint8_t comm_buf[8] = {0};
@@ -178,7 +182,10 @@ extern "C" void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart,
       auto *rc = GetRemoteControl();
       if (rc != nullptr) {
         rc->decode(g_dbus_buf);
-        g_rc_offline.update();
+        auto *rc_offline = GetRemoteOffline();
+        if (rc_offline != nullptr) {
+          rc_offline->update();
+        }
         g_dbus_rx_cnt = g_dbus_rx_cnt + 1;
       }
     }

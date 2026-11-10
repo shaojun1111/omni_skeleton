@@ -6,11 +6,12 @@
  *  Version     Date            Author          Note
  *  V1.0.0      2026-10-21      lishaojun       1. 初版：最小调度 + CAN 通讯启动
  *  V1.1.0      2026-10-28      lishaojun       2. 接入 IMU：上电初始化 + 每 1ms 更新
+ *  V1.2.0      2026-11-10      lishaojun       3. 接入 Robot 状态机
  *******************************************************************************
  * @attention :
  *  1. MainTaskInit() 由 main() 在 while(1) 之前调用一次。
  *  2. MainTask/CommTask 由 TIM6 1ms 中断调用（先算后发）。
- *  3. MOTOR_CALIB_TEST 是临时标定开关，标定完必须改回 0！
+ *  3. MOTOR_CALIB_TEST 是临时标定开关，标定完必须改回 0。
  *******************************************************************************
  *  Copyright (c) 2024 Hello World Team, Zhejiang University.
  *  All Rights Reserved.
@@ -22,16 +23,20 @@
 
 #include "tim.h"
 
+#include "ins_chassis_gimbal_comm.hpp"
 #include "ins_imu.hpp"
 #include "ins_motor.hpp"
+#include "ins_robot.hpp"
 
 #include "imu.hpp"
+#include "robot.hpp"
 
 /* Private macro -------------------------------------------------------------*/
 /* 临时电机标定开关：
  *   0 = 关闭（正常运行，电机输入保持 0）
  *   1 = 打开（上电后 4 个轮子同时正转 3 秒）
- * ⚠️ 标定完必须改回 0，否则上电自转，违反安全红线！ */
+ * ⚠️ 标定完必须改回 0，否则上电自转，违反安全红线。
+ */
 #define MOTOR_CALIB_TEST 0
 
 /* Private constants ---------------------------------------------------------*/
@@ -41,12 +46,16 @@
 volatile uint32_t g_tim6_cnt = 0;  /* TIM6 中断进了多少次 */
 volatile uint32_t g_comm_cnt = 0;  /* CommTask 调了多少次 */
 
-/* IMU 调试变量（Ozone Watched Data 观察，Refresh 需手动改 100ms） */
+/* IMU 调试变量（Ozone Watched Data 观察，Refresh 需手动设 100ms） */
 volatile float g_dbg_roll = 0.0f;          ///< 横滚角，rad
 volatile float g_dbg_pitch = 0.0f;         ///< 俯仰角，rad
 volatile float g_dbg_yaw = 0.0f;           ///< 偏航角，rad
 volatile uint8_t g_dbg_imu_calibrated = 0; ///< 0=标定中 1=完成
 volatile uint8_t g_dbg_imu_err = 0;        ///< BMI088 初始化错误位
+
+/* 状态机调试变量 */
+volatile uint8_t g_dbg_life_state = 0;   ///< 0=Dead 1=Resurrection 2=Working
+volatile uint32_t g_dbg_ready_cnt = 0;   ///< 就绪条件连续满足的周期数
 
 /* External variables --------------------------------------------------------*/
 /* Private function prototypes -----------------------------------------------*/
@@ -59,6 +68,15 @@ void MainTaskInit(void) {
   }
 
   CommTaskInit();
+
+  /* 注册模块并初始化状态机 */
+  auto *robot = GetRobot();
+  if (robot != nullptr) {
+    robot->registerChassis(GetChassis());
+    robot->registerImu(GetImu());
+    robot->registerComm(GetGimbalChassisComm());
+    robot->init();
+  }
 }
 
 void MainTask(void) {
@@ -93,7 +111,13 @@ void MainTask(void) {
     }
   }
 #else
-  /* TODO: 第 12 课接 GetRobot()->update() */
+  /* ---- 状态机 ---- */
+  auto *robot = GetRobot();
+  if (robot != nullptr) {
+    robot->update();
+    g_dbg_life_state = static_cast<uint8_t>(robot->lifeState());
+    g_dbg_ready_cnt = robot->readyCount();
+  }
 #endif
 }
 
@@ -101,8 +125,8 @@ void MainTask(void) {
 extern "C" void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
   if (htim == &htim6) {
     g_tim6_cnt = g_tim6_cnt + 1;
-    MainTask();   // 先"算"
+    MainTask();   // 先“算”
     g_comm_cnt = g_comm_cnt + 1;
-    CommTask();   // 后"发" + 喂狗
+    CommTask();   // 后“发” + 喂狗
   }
 }

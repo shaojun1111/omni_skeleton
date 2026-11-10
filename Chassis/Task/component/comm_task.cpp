@@ -26,7 +26,9 @@
 #include "ins_chassis_gimbal_comm.hpp"
 #include "ins_imu.hpp"
 #include "ins_motor.hpp"
+#include "ins_robot.hpp"
 #include "motor.hpp"
+#include "robot.hpp"
 
 /* 调试用：Ozone 里直接观察 4 个轮子的角度/速度（基地标定用） */
 volatile float g_dbg_angle[4] = {0.0f};
@@ -83,9 +85,12 @@ void CommTask(void) {
     if (imu != nullptr) {
       comm->chassis_data().chassis_yaw = imu->yaw();
       comm->chassis_data().imu_ok = imu->isCalibrated();
+      /* 自检通过 = IMU 零漂完成。不能写成“在 Working”，否则两板互相等待。 */
+      comm->chassis_data().chassis_ok = imu->isCalibrated();
     }
-    /* 第 12 课：chassis_ok / life_state 改由状态机写入 */
-    comm->chassis_data().chassis_ok = true;
+    auto *robot = GetRobot();
+    comm->chassis_data().life_state =
+        (robot != nullptr) ? robot->lifeState() : robot::LifeState::kDead;
 
     uint8_t comm_buf[8] = {0};
     comm->encode(comm_buf);

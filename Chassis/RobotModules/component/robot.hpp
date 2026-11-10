@@ -1,12 +1,15 @@
 /**
  *******************************************************************************
  * @file      :robot.hpp
- * @brief     :
+ * @brief     :底盘板顶层状态机（Dead / Resurrection / Working）
  * @history   :
  *  Version     Date            Author          Note
- *  V0.9.0      yyyy-mm-dd      <author>        1. <note>
+ *  V1.0.0      2026-11-10      lishaojun       1. 三态迁移 + 就绪判定 + 指令下发
  *******************************************************************************
  * @attention :
+ *  1. 本类决定“这一毫秒电机该不该出力”，Chassis 只负责把目标变成力矩。
+ *  2. update() 先做状态迁移，再调 Chassis::update()。
+ *  3. 急停、对方离线、IMU 未标定，任一成立都回 Dead。
  *******************************************************************************
  *  Copyright (c) 2024 Hello World Team, Zhejiang University.
  *  All Rights Reserved.
@@ -17,29 +20,67 @@
 #define CHASSIS_ROBOT_MODULES_ROBOT_HPP_
 
 /* Includes ------------------------------------------------------------------*/
+#include "module_state.hpp"
+
 /* Exported macro ------------------------------------------------------------*/
 /* Exported constants --------------------------------------------------------*/
-/* Exported types ------------------------------------------------------------*/
+/* Exported types --------------------------------------------------------*/
+namespace hello_world
+{
+namespace imu
+{
+class Imu;
+}  // namespace imu
+}  // namespace hello_world
+
+namespace robot
+{
+
+class Chassis;
+class GimbalChassisComm;
+
+class Robot
+{
+ public:
+  /**
+   * @brief 初始化：状态回 Dead、计数清零、底盘模块初始化
+   */
+  void init(void);
+
+  /**
+   * @brief 1ms 周期入口：迁移状态 → 生成指令 → 下发
+   */
+  void update(void);
+
+  void registerChassis(Chassis *chassis) { chassis_ = chassis; }
+  void registerImu(hello_world::imu::Imu *imu) { imu_ = imu; }
+  void registerComm(GimbalChassisComm *comm) { comm_ = comm; }
+
+  LifeState lifeState(void) const { return state_; }
+  uint32_t readyCount(void) const { return ready_cnt_; }
+
+ private:
+  /**
+   * @brief 四个条件同时成立：IMU 标定完成 / 对方在线 / 遥控在线 / 对方自检通过
+   */
+  bool isReady(void) const;
+
+  void enterDead(void);
+  void enterWorking(void);
+  void updateResurrection(void);
+  void updateWorking(void);
+
+  Chassis *chassis_ = nullptr;
+  hello_world::imu::Imu *imu_ = nullptr;
+  GimbalChassisComm *comm_ = nullptr;
+
+  LifeState state_ = LifeState::kDead;
+  uint32_t ready_cnt_ = 0;
+};
+
+}  // namespace robot
+
 /* Exported variables --------------------------------------------------------*/
 /* Exported function prototypes ----------------------------------------------*/
 
-/* ============================================================================
- * 【新人任务】声明底盘板顶层状态机类 Robot（namespace robot）。
- *
- * 你要做：
- *   1. 设计 Robot 类，作为本板每个控制周期（1ms）的入口：汇总各模块数据，
- *      生成控制指令并下发给执行部件。
- *   2. 实现「生命状态」三态切换：Dead（上电未就绪 / 离线）→ Resurrection（恢复
- *      自检）→ Working（正常控制），并定义各状态进入 / 退出时的复位动作。
- *   3. 在 Working 态下按手动控制源与工作模式（分离 / 随动 / 小陀螺）生成底盘运动指令。
- *   4. 提供注册各模块指针的接口（Chassis、Imu、4 轮电机、GimbalChassisComm），并在每个周期按正确顺序更新数据。
- *
- * 约束 / 提示：
- *   - 底盘板与云台板之间只能通过 GimbalChassisComm 的
- *     CAN 帧交换信息，不能直接互相调用函数或共享变量。
- *   - 控制周期入口由 Task/component/main_task.cpp 的定时中断调用，本类自己不要开中断、
- *     不要死等延时。
- *   - 急停：遥控器拨到急停位时，必须保证所有电机指令归零（硬性验收项）。
- *   - 状态机的基类 / 迁移机制要自己设计，本骨架不提供（裁判系统 / 超电 / 蜂鸣器等组件本骨架也没有，可忽略）。
- * ==========================================================================*/
 #endif /* CHASSIS_ROBOT_MODULES_ROBOT_HPP_ */

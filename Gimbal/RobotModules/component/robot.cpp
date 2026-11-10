@@ -1,37 +1,152 @@
 /**
  *******************************************************************************
  * @file      :robot.cpp
- * @brief     :
+ * @brief     :云台板顶层状态机实现
  * @history   :
  *  Version     Date            Author          Note
- *  V0.9.0      yyyy-mm-dd      <author>        1. <note>
+ *  V1.0.0      2026-11-10      lishaojun       1. 三态迁移 + 就绪判定 + 指令下发
  *******************************************************************************
  * @attention :
+ *  1. 迁移条件集中在 isReady()，状态函数只负责动作。
+ *  2. 所有状态都走 gimbal_->update()，保证 CAN 帧连续。
  *******************************************************************************
  *  Copyright (c) 2024 Hello World Team, Zhejiang University.
  *  All Rights Reserved.
  *******************************************************************************
  */
 /* Includes ------------------------------------------------------------------*/
+#include "robot.hpp"
+
+#include "gimbal.hpp"
+#include "gimbal_chassis_comm.hpp"
+#include "imu.hpp"
+#include "offline_checker.hpp"
+
 /* Private macro -------------------------------------------------------------*/
 /* Private constants ---------------------------------------------------------*/
+namespace
+{
+
+constexpr uint32_t kReadyHoldCnt = 100;  ///< 就绪条件需连续保持的周期数（1ms/周期）
+
+}  // namespace
+
 /* Private types -------------------------------------------------------------*/
 /* Private variables ---------------------------------------------------------*/
 /* External variables --------------------------------------------------------*/
 /* Private function prototypes -----------------------------------------------*/
 /* Exported function definitions ---------------------------------------------*/
-/* Private function definitions ----------------------------------------------*/
+namespace robot
+{
 
-/* ============================================================================
- * 【新人任务】实现 robot.hpp 中声明的状态机。
- *
- * 你要做：
- *   1. 周期入口：按「更新数据 → 状态机迁移 → 生成指令 → 下发」的顺序组织 update()。
- *   2. 三态实现：Dead 时输出全零并等待就绪条件；Resurrection 时做自检与复位（如等待
- *      电机使能、IMU 零漂收敛）；Working 时执行正常控制逻辑。
- *   3. 各工作模式（分离 / 随动 / 小陀螺）的指令生成分支。
- *
- * 约束 / 提示：
- *   - 状态切换时记得复位上一状态残留的指令，避免电机突变。
- *   - 所有下发指令统一经过本类，急停判断放在最外层，确保任何分支都先过急停。
- * ==========================================================================*/
+void Robot::init(void)
+{
+  state_ = LifeState::kDead;
+  ready_cnt_ = 0;
+  gimbal_inited_ = false;
+}
+
+void Robot::update(void)
+{
+  switch (state_) {
+    case LifeState::kDead: {
+      const bool estop = (comm_ != nullptr) && comm_->gimbal_data().estop;
+      if (!estop) {
+        state_ = LifeState::kResurrection;
+        ready_cnt_ = 0;
+      }
+      break;
+    }
+    case LifeState::kResurrection:
+      updateResurrection();
+      break;
+    case LifeState::kWorking:
+      updateWorking();
+      break;
+    default:
+      enterDead();
+      break;
+  }
+
+  if (gimbal_ != nullptr) {
+    gimbal_->update();
+  }
+}
+
+/* Private function definitions ----------------------------------------------*/
+bool Robot::isReady(void) const
+{
+  if (imu_ == nullptr || comm_ == nullptr || rc_offline_ == nullptr) {
+    return false;
+  }
+  if (!imu_->isCalibrated()) {
+    return false;
+  }
+  if (rc_offline_->isOffline()) {
+    return false;
+  }
+  if (comm_->isOffline()) {
+    return false;
+  }
+  return comm_->chassis_data().chassis_ok;
+}
+
+void Robot::enterDead(void)
+{
+  state_ = LifeState::kDead;
+  ready_cnt_ = 0;
+  if (gimbal_ != nullptr) {
+    gimbal_->stop();
+  }
+}
+
+void Robot::enterWorking(void)
+{
+  state_ = LifeState::kWorking;
+  if (gimbal_ != nullptr) {
+    /* 目标对齐当前角，避免切状态瞬间跳变 */
+    gimbal_->setTarget(
+        GimbalState{gimbal_->yawFeedback(), gimbal_->pitchFeedback()});
+  }
+}
+
+void Robot::updateResurrection(void)
+{
+  if (gimbal_ != nullptr) {
+    /* 第一帧反馈到达后再对齐角度；之前 angle() 还是初值 0 */
+    if (!gimbal_inited_) {
+      gimbal_->init();
+      gimbal_inited_ = true;
+    }
+    gimbal_->stop();
+  }
+
+  if (!isReady()) {
+    ready_cnt_ = 0;
+    return;
+  }
+
+  ready_cnt_ = ready_cnt_ + 1;
+  if (ready_cnt_ >= kReadyHoldCnt) {
+    enterWorking();
+  }
+}
+
+void Robot::updateWorking(void)
+{
+  if (gimbal_ == nullptr || comm_ == nullptr) {
+    enterDead();
+    return;
+  }
+
+  if (comm_->gimbal_data().estop || !isReady()) {
+    enterDead();
+    return;
+  }
+
+  /* 第 14 课：遥控 → 目标角。现在锁定当前角。 */
+  gimbal_->setTarget(
+      GimbalState{gimbal_->yawFeedback(), gimbal_->pitchFeedback()});
+}
+
+}  // namespace robot
