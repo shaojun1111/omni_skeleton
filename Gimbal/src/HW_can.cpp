@@ -48,6 +48,9 @@ volatile uint32_t g_can1_rx_cnt = 0;  ///< CAN1 收到的帧数
 volatile uint32_t g_can2_rx_cnt = 0;  ///< CAN2 收到的帧数
 volatile uint32_t g_dm_rx_cnt = 0;    ///< 命中的达妙反馈帧数
 volatile uint32_t g_comm_rx_cnt = 0;  ///< 命中的双板帧数（0x210）
+volatile uint32_t g_dbg_unknown_id = 0;   ///< 最后一个未识别的标准帧 ID
+volatile uint32_t g_unknown_rx_cnt = 0;   ///< 未识别帧的累计数
+volatile uint32_t g_dbg_id_cnt[128] = {0}; ///< 按 ID 分桶的接收计数（只统计 0x00~0x7F，调试用）
 
 /* Private function prototypes -----------------------------------------------*/
 static void DispatchRxFrame(const CAN_RxHeaderTypeDef *header, uint8_t data[8]);
@@ -153,6 +156,11 @@ static void DispatchRxFrame(const CAN_RxHeaderTypeDef *header, uint8_t data[8])
 {
   const uint32_t id = header->StdId;
 
+  /* 按 ID 分桶计数：不管认不认识都记，用于排查电机反馈 ID 配错 */
+  if (id < 128U) {
+    g_dbg_id_cnt[id] = g_dbg_id_cnt[id] + 1;
+  }
+
   if (id == kPitchRxId) {
     auto *pitch = GetMotorPitch();
     if (pitch != nullptr) {
@@ -172,5 +180,9 @@ static void DispatchRxFrame(const CAN_RxHeaderTypeDef *header, uint8_t data[8])
       comm->decode(data);
       g_comm_rx_cnt = g_comm_rx_cnt + 1;
     }
+  } else {
+    /* 未识别的 ID：把最后一个记下来，用于排查电机 ID 配错 */
+    g_dbg_unknown_id = id;
+    g_unknown_rx_cnt = g_unknown_rx_cnt + 1;
   }
 }

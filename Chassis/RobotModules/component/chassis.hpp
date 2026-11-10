@@ -6,10 +6,14 @@
  *  Version     Date            Author          Note
  *  V0.9.0      yyyy-mm-dd      <author>        1. <note>
  *  V1.0.0      2026-10-29      lishaojun       1. 初版：麦轮逆解 + 轮速闭环
+ *  V1.1.0      2026-11-11      <author>        1. 三模式：分离 / 跟随 / 小陀螺
  *******************************************************************************
  * @attention :
  *  1. setTarget() 只保存目标，实际解算在 update() 里做。
  *  2. update() 每 1ms 调用一次。
+ *  3. 模式决定 w 的来源：分离 / 小陀螺用云台下发的 spin，跟随用 δ 闭环回正。
+ *  4. setTarget() 之后才允许出力，stop() 后 update() 输出全零，防止停车状态下
+ *     跟随环继续驱动车体。
  *******************************************************************************
  *  Copyright (c) 2024 Hello World Team, Zhejiang University.
  *  All Rights Reserved.
@@ -49,6 +53,13 @@ class Chassis
   void setDelta(float delta);
 
   /**
+   * @brief 设置底盘模式
+   * @param mode kSeparate 分离 / kFollow 跟随 / kSpin 小陀螺
+   * @note  切换模式时自动复位跟随环，避免残留积分冲一下车体
+   */
+  void setMode(ChassisMode mode);
+
+  /**
    * @brief 周期任务：逆解 → 限幅 → 速度环 → setInput
    * @note  每 1ms 调用一次
    */
@@ -68,10 +79,25 @@ class Chassis
   /* 调试用：读取当前 δ */
   float delta(void) const { return delta_; }
 
+  /* 调试用：读取最近一次下发的云台系目标（未旋转、未限幅） */
+  ChassisState target(void) const { return target_; }
+
+  /* 调试用：读取当前模式 */
+  ChassisMode mode(void) const { return mode_; }
+
+  /**
+   * @brief 调试用：读取最近一次进逆解的车体系命令（已限幅）
+   * @note  vx 前 / vy 左 / w 逆时针为正，可直接和轮速对照验算
+   */
+  ChassisState bodyCmd(void) const { return body_cmd_; }
+
  private:
-  ChassisState target_;
+  ChassisState target_;  ///< 云台系目标（vx / vy / spin），来自 GimbalData
+  ChassisState body_cmd_;  ///< 车体系命令，模式解算 + 限幅之后
   float wheel_speed_[4] = {0.0f, 0.0f, 0.0f, 0.0f};  ///< [RF, RB, LB, LF]，m/s
   float delta_ = 0.0f;  ///< 云台相对车头的偏航角，rad
+  ChassisMode mode_ = ChassisMode::kSeparate;  ///< 当前底盘模式
+  bool enabled_ = false;  ///< setTarget 置位 / stop 清零，为假时输出全零
 };
 
 }  // namespace robot

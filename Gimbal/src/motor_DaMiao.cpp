@@ -53,6 +53,13 @@ namespace motor
 {
 /* Private macro -------------------------------------------------------------*/
 /* Private constants ---------------------------------------------------------*/
+namespace
+{
+/* 单周期角度变化上限，超过即判为跳变（反馈中断、丢帧），该帧不累加圈数。
+ * DM-J4310 的 VMAX 为 21 rad/s，1 ms 控制周期内物理上最多转 0.021 rad，
+ * 取 0.8 rad 已比该上限宽松约 38 倍，足以容纳偶发丢帧而不误判正常运动。 */
+constexpr float kAngleJumpMaxRad = 0.8f;
+}  // namespace
 /* Private types -------------------------------------------------------------*/
 /* Private variables ---------------------------------------------------------*/
 /* External variables --------------------------------------------------------*/
@@ -194,7 +201,19 @@ bool DaMiao::decodeFdb(const uint8_t* data)
   /* 判断是否旋转了一圈 */
   float round = round_;
   float delta_angle = angle - last_angle;
-  if (fabsf(delta_angle) > 2 * PI * kCross0ValueThres) {
+
+  /* 差分先折算到 [-π, π)：真过零时 |delta_angle| 接近 2π，折算后只剩本周期内的真实
+   * 运动量，否则跳变判据会把真过零误判为跳变 */
+  const float delta_motion = NormPeriodData(-PI, PI, delta_angle);
+  const bool angle_jump = fabsf(delta_motion) > kAngleJumpMaxRad;
+
+  /* 首帧时 last_raw_angle_ 还是初值 0，且各反馈量均未写入过，本帧只建立基准不累圈 */
+  const bool first_frame = (round_ == 0.0f) && (last_raw_angle_ == 0.0f) &&
+                           (angle_ == 0.0f) && (vel_raw_ == 0.0f) &&
+                           (torq_ == 0.0f);
+
+  if (!first_frame && !angle_jump &&
+      fabsf(delta_angle) > 2 * PI * kCross0ValueThres) {
     delta_angle < 0 ? round++ : round--;
 
     /* 避免圈数溢出 */

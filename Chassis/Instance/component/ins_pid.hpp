@@ -31,4 +31,7 @@ class Pid;
 /* 获取第 idx 号轮电机速度环 PID 单例（idx ∈ [0,4)）。 */
 hello_world::pid::Pid *GetPidMotorWheel(int idx);
 
+/* 获取跟随模式（kFollow）的航向环 PID 单例：输入 (目标 0 − δ)，输出自旋角速度。 */
+hello_world::pid::Pid *GetPidChassisFollow();
+
 #endif /* CHASSIS_INSTANCE_INS_PID_HPP_ */

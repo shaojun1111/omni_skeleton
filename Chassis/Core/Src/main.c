@@ -111,12 +111,14 @@ int main(void)
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   HAL_GPIO_WritePin(GPIOH, GPIO_PIN_11, GPIO_PIN_RESET);
-  MX_IWDG_Init();
   HAL_TIM_Base_Start_IT(&htim2);
   HAL_TIM_Base_Start_IT(&htim4);
-  HAL_TIM_Base_Start_IT(&htim6);
 
   MainTaskInit();
+
+  /* 1ms 调度最后再开：TIM6 中断里跑 MainTask/CommTask，
+   * 必须等对象与 CAN/UART 都初始化完，否则会在构造完成前被中断调用 */
+  HAL_TIM_Base_Start_IT(&htim6);
 
   /* USER CODE END 2 */
 

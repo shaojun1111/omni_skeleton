@@ -23,7 +23,9 @@ namespace {
 hello_world::motor::OptionalParams MakeOpt(hello_world::motor::Dir dir) {
   hello_world::motor::OptionalParams opt;
   opt.dir = dir;
-  /* 实车减速比 14:1（图标注），覆盖库默认的 3591/187≈19.2 */
+  /* 减速比以实车为准：手转标定 14:1（2026-10-22 第一次基地调试、四轮能跑）。
+   * 考核书 2.3 表写的是 3591/187≈19.2，与实车不符，按实车填 14，
+   * 否则轮速反馈会被折算错、闭环在错误的速度上收敛。 */
   opt.remove_build_in_reducer = true;
   opt.ex_redu_rat = 14.0f;
   return opt;

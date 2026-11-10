@@ -115,16 +115,13 @@ int main(void)
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start_IT(&htim4);
   HAL_GPIO_WritePin(GPIOH, GPIO_PIN_11, GPIO_PIN_RESET);
-  MX_IWDG_Init();
   HAL_TIM_Base_Start_IT(&htim2);
-  HAL_TIM_Base_Start_IT(&htim6);
 
   MainTaskInit();
 
-  /* TODO【新人任务】:
-   * 在进入 while(1) 之前调用 MainTaskInit()，完成电机 / IMU / 通讯 / IWDG 的
-   * 一次性初始化。此后的控制与通讯周期由 htim6 中断驱动（见 Task/main_task.cpp）。
-   */
+  /* 1ms 调度最后再开：TIM6 中断里跑 MainTask/CommTask，
+   * 必须等对象与 CAN/UART 都初始化完，否则会在构造完成前被中断调用 */
+  HAL_TIM_Base_Start_IT(&htim6);
 
   /* USER CODE END 2 */
 

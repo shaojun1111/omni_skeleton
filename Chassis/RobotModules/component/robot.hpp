@@ -5,11 +5,13 @@
  * @history   :
  *  Version     Date            Author          Note
  *  V1.0.0      2026-11-10      lishaojun       1. 三态迁移 + 就绪判定 + 指令下发
+ *  V1.1.0      2026-11-11      <author>        1. 就绪条件并入本地遥控；下发底盘模式
  *******************************************************************************
  * @attention :
  *  1. 本类决定“这一毫秒电机该不该出力”，Chassis 只负责把目标变成力矩。
  *  2. update() 先做状态迁移，再调 Chassis::update()。
  *  3. 急停、对方离线、IMU 未标定，任一成立都回 Dead。
+ *  4. 底盘模式随 GimbalData::mode 每周期下发，由 Chassis 决定 w 的来源。
  *******************************************************************************
  *  Copyright (c) 2024 Hello World Team, Zhejiang University.
  *  All Rights Reserved.
@@ -61,7 +63,13 @@ class Robot
 
  private:
   /**
-   * @brief 四个条件同时成立：IMU 标定完成 / 对方在线 / 遥控在线 / 对方自检通过
+   * @brief 本地遥控是否在线（DBUS 帧未超时）
+   */
+  bool isRemoteOnline(void) const;
+
+  /**
+   * @brief 四个条件同时成立：IMU 标定完成 / 对方在线 /（本地遥控 或 对方转发的
+   *        remote_ok）/ 对方自检通过
    */
   bool isReady(void) const;
 

@@ -39,10 +39,14 @@ static uint32_t p_tx_mailbox;
 /* 调试用：两路 CAN 的接收计数（Ozone 里观察，确认 CAN 口分工） */
 volatile uint32_t g_can1_rx_cnt = 0;
 volatile uint32_t g_can2_rx_cnt = 0;
+volatile uint32_t g_comm_rx_cnt = 0;  ///< 命中的 G2C 帧数（0x211）
 
 /* 调试用：CAN 发送成功/失败计数 */
 volatile uint32_t g_tx_ok = 0;
 volatile uint32_t g_tx_fail = 0;
+
+/* 调试用：CAN1 最近一帧的 StdId（确认收到的是什么） */
+volatile uint32_t g_dbg_last_rx_id = 0;
 
 /* Exported function definitions ---------------------------------------------*/
 
@@ -102,11 +106,13 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
                              can1_rx_data) == HAL_OK) {
       ++g_can1_rx_cnt;
       const uint32_t id = rx_header1.StdId;
+      g_dbg_last_rx_id = id;
 
       /* 底盘板 CAN1 = 双板帧（工作假设，基地确认） */
       auto *comm = GetGimbalChassisComm();
       if (comm != nullptr && id == 0x211) {  // G2C: 云台 -> 底盘
         comm->decode(can1_rx_data);
+        g_comm_rx_cnt = g_comm_rx_cnt + 1;
       }
     }
   } else if (hcan == &hcan2) {
@@ -139,7 +145,21 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
  */
 void HAL_CAN_RxFifo1MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
-  if (hcan == &hcan2) {
+  if (hcan == &hcan1) {
+    /* 兼容：CAN1 的帧也可能落到 FIFO1（本板实测滤波器分配不按配置走） */
+    if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO1, &rx_header1,
+                             can1_rx_data) == HAL_OK) {
+      ++g_can1_rx_cnt;
+      g_dbg_last_rx_id = rx_header1.StdId;
+      if (rx_header1.StdId == 0x211) {  // G2C: 云台 -> 底盘
+        auto *comm = GetGimbalChassisComm();
+        if (comm != nullptr) {
+          comm->decode(can1_rx_data);
+          g_comm_rx_cnt = g_comm_rx_cnt + 1;
+        }
+      }
+    }
+  } else if (hcan == &hcan2) {
     if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO1, &rx_header2,
                              can2_rx_data) == HAL_OK) {
       ++g_can2_rx_cnt;

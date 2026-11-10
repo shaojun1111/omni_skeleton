@@ -23,13 +23,16 @@
 
 #include "DT7.hpp"
 #include "HW_can.hpp"
+#include "gimbal.hpp"
 #include "gimbal_chassis_comm.hpp"
 #include "imu.hpp"
 #include "ins_chassis_gimbal_comm.hpp"
 #include "ins_comm.hpp"
 #include "ins_imu.hpp"
 #include "ins_motor.hpp"
+#include "ins_robot.hpp"
 #include "offline_checker.hpp"
+#include "robot.hpp"
 
 /* Private macro -------------------------------------------------------------*/
 /* 云台电机所在 CAN 总线。
@@ -38,9 +41,55 @@
  *    默认 hcan1（与底盘板对称：底盘 CAN2=电机，云台 CAN1=电机）。 */
 #define GIMBAL_MOTOR_CAN (&hcan1)
 
-/* 板间通讯所在 CAN 总线：与电机总线相反。
- * 底盘板实测 CAN2=电机、CAN1=板间；云台板按对称假设 CAN1=电机、CAN2=板间。 */
+/* 板间通讯所在 CAN 总线。
+ * 底盘板 CAN1 能收到云台的 DM 反馈帧 → 两板 CAN1 物理连通 → 板间也走 CAN1。
+ * 电机和板间共用 CAN1：ID 不冲突（DM 用 0x01/0x02，双板帧用 0x210/0x211）。 */
 #define GIMBAL_COMM_CAN (&hcan2)
+
+/* Private constants ---------------------------------------------------------*/
+namespace
+{
+
+/* 遥控映射常量 */
+constexpr float kMaxLinearSpeed = 2.0f;  ///< 平移速度上限，m/s
+/* 自旋上限受协议限制：gimbal_chassis_comm 用 kSpinScale=20 压成 int8，
+ * 满量程 127/20≈6.35 rad/s，故上限取 6.0 以免被裁剪。可现场调低。 */
+constexpr float kMaxSpin = 6.0f;  ///< 自旋角速度上限，rad/s
+constexpr float kStickDeadZone = 0.05f;  ///< 摇杆死区
+
+/* 死区处理：死区内归零，死区外线性重标到满量程，阈值处不跳变 */
+float ScaleStick(float v) {
+  if (v > kStickDeadZone) {
+    return (v - kStickDeadZone) / (1.0f - kStickDeadZone);
+  }
+  if (v < -kStickDeadZone) {
+    return (v + kStickDeadZone) / (1.0f - kStickDeadZone);
+  }
+  return 0.0f;
+}
+
+/* 左拨杆 S1 → 底盘模式。按 DT7 实际档位值（上=1、中=3、下=2）映射：
+ * 上档 = 分离（上电默认最安全，摇杆直映射）、中档 = 跟随、下档 = 小陀螺。 */
+robot::ChassisMode ModeFromS1(uint8_t sw) {
+  switch (sw) {
+    case static_cast<uint8_t>(hello_world::remote_control::kSwitchStateUp):
+      return robot::ChassisMode::kSeparate;
+    case static_cast<uint8_t>(hello_world::remote_control::kSwitchStateMid):
+      return robot::ChassisMode::kFollow;
+    case static_cast<uint8_t>(hello_world::remote_control::kSwitchStateDown):
+      return robot::ChassisMode::kSpin;
+    default:
+      return robot::ChassisMode::kSeparate;
+  }
+}
+
+/* 右拨杆 S2 打到下档 = 急停 */
+bool EstopFromS2(uint8_t sw) {
+  return sw ==
+         static_cast<uint8_t>(hello_world::remote_control::kSwitchStateDown);
+}
+
+}  // namespace
 
 /* Private variables ---------------------------------------------------------*/
 /* DBUS 接收缓冲（18 字节） */
@@ -62,6 +111,15 @@ volatile uint32_t g_gimbal_tx_cnt = 0;  ///< 云台电机帧发送次数（2 帧
 volatile uint32_t g_gimbal_tx_fail = 0; ///< encode() 失败次数（非 0 说明模式未就绪）
 volatile uint32_t g_comm_tx_cnt = 0;    ///< 双板帧发送次数
 volatile float g_dbg_delta = 0.0f;      ///< 发给底盘的 delta（调试）
+volatile float g_dbg_g2c_vx = 0.0f;    ///< 下发的云台系 vx，m/s
+volatile float g_dbg_g2c_vy = 0.0f;    ///< 下发的云台系 vy，m/s
+volatile float g_dbg_g2c_spin = 0.0f;  ///< 下发的自旋角速度，rad/s
+volatile uint8_t g_dbg_g2c_mode = 0;   ///< 下发的底盘模式（0/1/2）
+
+/* 调试寄存器：CAN1 发送/错误状态 */
+volatile uint32_t g_dbg_can1_tsr = 0;   ///< CAN1->TSR，发送状态
+volatile uint32_t g_dbg_can1_esr = 0;   ///< CAN1->ESR，错误状态
+volatile uint32_t g_dbg_can1_free = 0;  ///< CAN1 空闲发送邮箱数（0~3）
 
 /* Private function prototypes -----------------------------------------------*/
 static void SendGimbalMotors(void);
@@ -108,22 +166,56 @@ void CommTask(void) {
   auto *comm = GetGimbalChassisComm();
   if (comm != nullptr) {
     auto *imu = GetImu();
-    const float gimbal_yaw = (imu != nullptr) ? imu->yaw() : 0.0f;
-
-    /* delta = 云台朝向 − 车体朝向。
-     * 对方离线时归零：此时 chassis_yaw 还是上次的值（或初值 0），
-     * 拿来当基准会让底盘朝错误方向平移。 */
-    comm->gimbal_data().delta =
-        comm->isOffline()
-            ? 0.0f
-            : (gimbal_yaw - comm->chassis_data().chassis_yaw);
+    /* delta = 云台朝向 − 车体朝向，用 yaw 电机编码器算。
+     * 云台板 IMU 跟着云台动，安装倾角不固定，不能用来算 yaw。
+     * 对方离线时归零：此时没有可信的车体基准。 */
+    auto *gimbal = GetGimbal();
+    auto *yaw_motor = GetMotorYaw();
+    float delta = 0.0f;
+    if (!comm->isOffline() && gimbal != nullptr && yaw_motor != nullptr) {
+      delta = yaw_motor->angle() - gimbal->yawZero();
+    }
+    comm->gimbal_data().delta = delta;
     comm->gimbal_data().remote_ok =
         !(GetRemoteOffline() != nullptr && GetRemoteOffline()->isOffline());
     /* 自检通过 = IMU 零漂完成。不能写成“在 Working”，否则两板互相等待。 */
     if (imu != nullptr) {
       comm->gimbal_data().gimbal_ok = imu->isCalibrated();
     }
-    /* vx / vy / spin：第 14 课由遥控映射填入，现在保持 0 */
+    /* 遥控状态：离线或 S2 下档急停，速度指令全 0 */
+    const bool rc_lost =
+        (GetRemoteOffline() != nullptr && GetRemoteOffline()->isOffline());
+    const bool estop = EstopFromS2(g_dbg_rc_r_sw);
+
+    /* 云台系速度指令：右摇杆平移（前 / 左为正）、拨轮自旋 */
+    float vx = 0.0f;
+    float vy = 0.0f;
+    float spin = 0.0f;
+    if (!rc_lost && !estop) {
+      vx = kMaxLinearSpeed * ScaleStick(g_dbg_rc_rv);
+      vy = -kMaxLinearSpeed * ScaleStick(g_dbg_rc_rh);
+      spin = kMaxSpin * ScaleStick(g_dbg_rc_wheel);
+    }
+    comm->gimbal_data().vx = vx;
+    comm->gimbal_data().vy = vy;
+    comm->gimbal_data().spin = spin;
+    comm->gimbal_data().mode = ModeFromS1(g_dbg_rc_l_sw);
+    comm->gimbal_data().estop = estop;
+
+    g_dbg_g2c_vx = vx;
+    g_dbg_g2c_vy = vy;
+    g_dbg_g2c_spin = spin;
+    g_dbg_g2c_mode = static_cast<uint8_t>(comm->gimbal_data().mode);
+
+    /* 云台目标：左摇杆映射，只在 Working 且未急停时接管，
+     * 其余状态沿用 Robot 的归零路径 */
+    auto *sys = GetRobot();
+    const bool stick_on = (sys != nullptr) &&
+                          (sys->lifeState() == robot::LifeState::kWorking) &&
+                          !rc_lost && !estop;
+    if (gimbal != nullptr) {
+      gimbal->updateStick(g_dbg_rc_lv, g_dbg_rc_lh, stick_on);
+    }
 
     uint8_t comm_buf[8] = {0};
     comm->encode(comm_buf);
@@ -131,6 +223,11 @@ void CommTask(void) {
     g_comm_tx_cnt = g_comm_tx_cnt + 1;
     g_dbg_delta = comm->gimbal_data().delta;
   }
+
+  /* ---- 调试：CAN1 发送状态与错误状态 ---- */
+  g_dbg_can1_tsr = CAN1->TSR;
+  g_dbg_can1_esr = CAN1->ESR;
+  g_dbg_can1_free = HAL_CAN_GetTxMailboxesFreeLevel(GIMBAL_MOTOR_CAN);
 
   /* ---- 喂狗 ---- */
   HAL_IWDG_Refresh(&hiwdg);

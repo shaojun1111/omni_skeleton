@@ -6,6 +6,7 @@
  *  Version     Date            Author          Note
  *  V0.9.0      yyyy-mm-dd      <author>        1. <note>
  *  V1.0.0      2026-11-08      lishaojun       1. 角度差 → PID → MIT 力矩
+ *  V1.1.0      2026-11-11      lishaojun       2. 遥控摇杆接管 yaw / pitch 目标
  *******************************************************************************
  * @attention :
  *  1. yaw 的目标角先投影到反馈角所在的圈，再交给 PID，避免 ±π 处暴转。
@@ -33,6 +34,7 @@ namespace
 constexpr float kDt = 0.001f;        ///< 控制周期，s
 constexpr float kPitchMin = -0.7f;   ///< pitch 下限，rad（约 -40°）
 constexpr float kPitchMax = 0.7f;    ///< pitch 上限，rad（约 +40°）
+constexpr float kYawStickGain = 2.5f;  ///< 左摇杆满杆 yaw 角速度，rad/s
 
 }  // namespace
 
@@ -56,6 +58,14 @@ void Gimbal::init(void)
   pitch_fb_ = (pitch_motor != nullptr) ? pitch_motor->angle() : 0.0f;
   target_.yaw = yaw_fb_;
   target_.pitch = hello_world::Bound(pitch_fb_, kPitchMin, kPitchMax);
+
+  /* 记录云台朝向零位：上电时云台正对车头 */
+  yaw_zero_ = yaw_fb_;
+
+  /* 摇杆目标起点与当前角一致，接管时不跳 */
+  stick_yaw_ = yaw_fb_;
+  stick_pitch_ = target_.pitch;
+  stick_active_ = false;
 
   yaw_out_ = 0.0f;
   pitch_out_ = 0.0f;
@@ -83,6 +93,26 @@ void Gimbal::setTarget(const GimbalState& target)
   target_.pitch = hello_world::Bound(target.pitch, kPitchMin, kPitchMax);
 }
 
+void Gimbal::updateStick(float lv, float lh, bool enabled)
+{
+  if (!enabled) {
+    stick_active_ = false;
+    return;
+  }
+
+  if (!stick_active_) {
+    /* 接管瞬间从当前反馈角起积分，避免跳变 */
+    stick_yaw_ = yaw_fb_;
+    stick_active_ = true;
+  }
+
+  /* yaw：速度积分，松杆停在当前位置 */
+  stick_yaw_ += kYawStickGain * lh * kDt;
+
+  /* pitch：直接角度映射，限位与 setTarget() 一致 */
+  stick_pitch_ = hello_world::Bound(-kPitchMax * lv, kPitchMin, kPitchMax);
+}
+
 void Gimbal::update(void)
 {
   auto *yaw_motor = GetMotorYaw();
@@ -98,14 +128,18 @@ void Gimbal::update(void)
   yaw_fb_ = yaw_motor->angle();
   pitch_fb_ = pitch_motor->angle();
 
+  /* 摇杆接管时目标来自摇杆，否则用 setTarget() 下发的目标 */
+  const float yaw_goal = stick_active_ ? stick_yaw_ : target_.yaw;
+  const float pitch_goal = stick_active_ ? stick_pitch_ : target_.pitch;
+
   /* yaw：把目标投影到当前圈，误差落在 [-π, π) */
   const float yaw_target_near =
-      yaw_fb_ + hello_world::AngleNormRad(target_.yaw - yaw_fb_);
+      yaw_fb_ + hello_world::AngleNormRad(yaw_goal - yaw_fb_);
   yaw_out_ = yaw_pid->calc(yaw_target_near, yaw_fb_, kDt);
 
-  /* pitch：目标已在 setTarget 钳位，这里再钳一次防止直接写 target_ */
+  /* pitch：目标已在 setTarget() / updateStick() 钳位，这里再钳一次 */
   const float pitch_target =
-      hello_world::Bound(target_.pitch, kPitchMin, kPitchMax);
+      hello_world::Bound(pitch_goal, kPitchMin, kPitchMax);
   pitch_out_ = pitch_pid->calc(pitch_target, pitch_fb_, kDt);
 
   /* MIT 帧：kp = kd = 0，只输出前馈力矩 */
@@ -124,6 +158,9 @@ void Gimbal::stop(void)
 
   yaw_out_ = 0.0f;
   pitch_out_ = 0.0f;
+
+  /* 交还目标控制权：下次接管先用当时的反馈角对齐 */
+  stick_active_ = false;
 
   if (yaw_pid != nullptr) {
     yaw_pid->reset();

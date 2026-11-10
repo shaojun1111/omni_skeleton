@@ -427,8 +427,11 @@ BMI088ErrState BMI088::gyroSelfTest(void) const
 
   uint8_t test_result;
 
-  /* 等待自检完成 */
-  while (1) {
+  /* 等待自检完成（必须有上限）：BIST 不 ready 时死等会让 BMI088::init()
+   * 永久卡住 —— 调度中断还在跑就变成"看门狗在喂、程序已死"，
+   * 调度后启动则变成看门狗复位循环。两种都不能出现，超时按失败返回。 */
+  constexpr uint32_t kSelfTestMaxTry = 200u;
+  for (uint32_t i = 0u; i < kSelfTestMaxTry; ++i) {
     tick::DelayUs(kCommWaitTimeUs);
     test_result = gyroRead(BMI088_GYRO_GYRO_SELF_TEST);
 
@@ -440,6 +443,7 @@ BMI088ErrState BMI088::gyroSelfTest(void) const
       }
     }
   }
+  return kBMI088ErrStateGyroSelfTestFailed;
 }
 
 void BMI088::getGyroData(float gyro_data[3]) const

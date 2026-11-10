@@ -6,6 +6,7 @@
  *  Version     Date            Author          Note
  *  V0.9.0      yyyy-mm-dd      <author>        1. <note>
  *  V1.0.0      2026-11-08      lishaojun       1. 初版：角度差 → PID → MIT 力矩
+ *  V1.1.0      2026-11-11      lishaojun       2. 遥控摇杆接管 yaw / pitch 目标
  *******************************************************************************
  * @attention :
  *  1. yaw 连续旋转，目标角在 update() 里投影到当前圈再交给 PID。
@@ -45,6 +46,15 @@ class Gimbal
   void setTarget(const GimbalState& target);
 
   /**
+   * @brief 遥控摇杆映射：yaw 速度积分、pitch 绝对角
+   * @param lv 左摇杆竖直，[-1, 1]，前推为正
+   * @param lh 左摇杆水平，[-1, 1]，右推为正
+   * @param enabled true：目标由摇杆决定；false：回到 setTarget() 的目标
+   * @note  每 1ms 调用一次；yaw 松杆停在当前目标，不回正
+   */
+  void updateStick(float lv, float lh, bool enabled);
+
+  /**
    * @brief 周期任务：读反馈 → 算误差 → PID → setMitInput
    * @note  每 1ms 调用一次
    */
@@ -61,12 +71,23 @@ class Gimbal
   float yawOutput(void) const { return yaw_out_; }
   float pitchOutput(void) const { return pitch_out_; }
 
+  /**
+   * @brief 云台朝向零位（init() 时的 yaw 反馈角）
+   * @note  底盘用 delta = yaw->angle() - yawZero() 把云台系速度转到车体系
+   */
+  float yawZero(void) const { return yaw_zero_; }
+
  private:
   GimbalState target_{};
   float yaw_fb_ = 0.0f;     ///< yaw 反馈角，rad
   float pitch_fb_ = 0.0f;   ///< pitch 反馈角，rad
   float yaw_out_ = 0.0f;    ///< yaw 输出力矩，N·m
   float pitch_out_ = 0.0f;  ///< pitch 输出力矩，N·m
+  float yaw_zero_ = 0.0f;   ///< 云台朝向零位，rad（init() 时记录）
+
+  float stick_yaw_ = 0.0f;    ///< 摇杆积分出的 yaw 目标，rad
+  float stick_pitch_ = 0.0f;  ///< 摇杆给出的 pitch 目标，rad
+  bool stick_active_ = false;  ///< 摇杆是否接管目标
 };
 
 }  // namespace robot

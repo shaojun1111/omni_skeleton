@@ -25,10 +25,12 @@
 namespace
 {
 
-/* BMI088 安装方向与车体系一致时的旋转矩阵（单位矩阵） */
+/* BMI088 安装方向：按实测重力方向标定（绕 x 轴 -149.7°）
+ * 实测平放：acc_chip ≈ (0, -4.91, -8.39)
+ * 验证：平放 roll≈0、抬头 pitch<0、右压 roll>0 */
 const float kRotIdentity[9] = {1.0f, 0.0f, 0.0f,
-                               0.0f, 1.0f, 0.0f,
-                               0.0f, 0.0f, 1.0f};
+                               0.0f, -0.8634f, 0.5045f,
+                               0.0f, -0.5045f, -0.8634f};
 
 /* Mahony 参数：采样率 1000Hz，比例增益 1.0，积分增益 0.0 */
 constexpr float kMahonyFreq = 1000.0f;
@@ -69,10 +71,20 @@ void Imu::init(void)
   }
 }
 
+/* 调试变量（Ozone 观察，已过旋转矩阵） */
+volatile float g_dbg_acc_x = 0.0f;
+volatile float g_dbg_acc_y = 0.0f;
+volatile float g_dbg_acc_z = 0.0f;
+
 void Imu::update(void)
 {
   /* 读一次芯片：加速度 m/s²，角速度 rad/s */
   bmi088_.getData(acc_, gyro_, nullptr);
+
+  /* 调试：观察加速度计三轴（已过旋转矩阵） */
+  g_dbg_acc_x = acc_[0];
+  g_dbg_acc_y = acc_[1];
+  g_dbg_acc_z = acc_[2];
 
   if (!calibrated_) {
     /* ---- 标定阶段：累加求均值 ---- */
