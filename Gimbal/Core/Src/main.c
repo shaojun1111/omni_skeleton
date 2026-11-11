@@ -113,11 +113,18 @@ int main(void)
   MX_TIM3_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+  /* 调试暂停时冻结 IWDG：否则 Ozone halt 后 600 ms 被复位，
+   * halt→复位→再 halt，表现为“连上就断、再连连不上” */
+  __HAL_DBGMCU_FREEZE_IWDG();
+
   HAL_TIM_Base_Start_IT(&htim4);
   HAL_GPIO_WritePin(GPIOH, GPIO_PIN_11, GPIO_PIN_RESET);
   HAL_TIM_Base_Start_IT(&htim2);
 
+  /* TIM6 还没启动，初始化期间没人喂狗，先手动喂一次 */
+  HAL_IWDG_Refresh(&hiwdg);
   MainTaskInit();
+  HAL_IWDG_Refresh(&hiwdg);
 
   /* 1ms 调度最后再开：TIM6 中断里跑 MainTask/CommTask，
    * 必须等对象与 CAN/UART 都初始化完，否则会在构造完成前被中断调用 */

@@ -35,16 +35,15 @@
 #include "robot.hpp"
 
 /* Private macro -------------------------------------------------------------*/
-/* 云台电机所在 CAN 总线。
- * ⚠️ 基地② 用 g_can1_rx_cnt / g_can2_rx_cnt 确认后改这里：
- *    哪路计数随电机反馈增长，就把这里改成那一路。
- *    默认 hcan1（与底盘板对称：底盘 CAN2=电机，云台 CAN1=电机）。 */
-#define GIMBAL_MOTOR_CAN (&hcan1)
+/* 云台两轴不在同一条总线上（按实车接线图）：
+ *   Yaw   id=2 → 滑环网络 → 云台C板 CAN1（实测反馈 0x12 在 CAN1）
+ *   Pitch id=1 → 云台分电板 → 云台C板 CAN2
+ * 两条总线 ID 不冲突：DM 用 0x01/0x02，板间帧用 0x210/0x211。 */
+#define GIMBAL_YAW_CAN (&hcan1)
+#define GIMBAL_PITCH_CAN (&hcan2)
 
-/* 板间通讯所在 CAN 总线。
- * 底盘板 CAN1 能收到云台的 DM 反馈帧 → 两板 CAN1 物理连通 → 板间也走 CAN1。
- * 电机和板间共用 CAN1：ID 不冲突（DM 用 0x01/0x02，双板帧用 0x210/0x211）。 */
-#define GIMBAL_COMM_CAN (&hcan2)
+/* 板间通讯所在 CAN 总线：两板 CAN1 经 2 路滑环物理连通。 */
+#define GIMBAL_COMM_CAN (&hcan1)
 
 /* Private constants ---------------------------------------------------------*/
 namespace
@@ -142,20 +141,51 @@ void CommTaskInit(void) {
 }
 
 void CommTask(void) {
-  /* 刷新调试变量 */
+  auto *comm = GetGimbalChassisComm();
   auto *rc = GetRemoteControl();
-  if (rc != nullptr) {
-    g_dbg_rc_lv = rc->rc_lv();
-    g_dbg_rc_lh = rc->rc_lh();
-    g_dbg_rc_rv = rc->rc_rv();
-    g_dbg_rc_rh = rc->rc_rh();
-    g_dbg_rc_wheel = rc->rc_wheel();
-    g_dbg_rc_l_sw = static_cast<uint8_t>(rc->rc_l_switch());
-    g_dbg_rc_r_sw = static_cast<uint8_t>(rc->rc_r_switch());
-  }
   auto *rc_offline = GetRemoteOffline();
-  g_dbg_rc_offline =
-      (rc_offline != nullptr && rc_offline->isOffline()) ? 1 : 0;
+  const bool rc_local_ok =
+      (rc_offline != nullptr) && !rc_offline->isOffline();
+
+  /* 摇杆来源：本板接收机优先；本板没有则用底盘转发的值（接收机在底盘板）。 */
+  float lv = 0.0f;
+  float lh = 0.0f;
+  float rv = 0.0f;
+  float rh = 0.0f;
+  float wheel = 0.0f;
+  uint8_t s1 =
+      static_cast<uint8_t>(hello_world::remote_control::kSwitchStateUp);
+  uint8_t s2 = s1;
+  bool rc_ok = rc_local_ok;
+  if (rc_local_ok && rc != nullptr) {
+    lv = rc->rc_lv();
+    lh = rc->rc_lh();
+    rv = rc->rc_rv();
+    rh = rc->rc_rh();
+    wheel = rc->rc_wheel();
+    s1 = static_cast<uint8_t>(rc->rc_l_switch());
+    s2 = static_cast<uint8_t>(rc->rc_r_switch());
+  } else if (comm != nullptr && !comm->isOffline() &&
+             comm->chassis_data().remote_ok) {
+    lv = comm->chassis_data().lv;
+    lh = comm->chassis_data().lh;
+    rv = comm->chassis_data().rv;
+    rh = comm->chassis_data().rh;
+    wheel = comm->chassis_data().wheel;
+    s1 = comm->chassis_data().s1;
+    s2 = comm->chassis_data().s2;
+    rc_ok = true;
+  }
+
+  /* 调试变量显示实际参与控制的值 */
+  g_dbg_rc_lv = lv;
+  g_dbg_rc_lh = lh;
+  g_dbg_rc_rv = rv;
+  g_dbg_rc_rh = rh;
+  g_dbg_rc_wheel = wheel;
+  g_dbg_rc_l_sw = s1;
+  g_dbg_rc_r_sw = s2;
+  g_dbg_rc_offline = rc_ok ? 0 : 1;
 
   /* ---- 云台电机：每周期 encode + 发送 ---- */
   /* 达妙上电默认失能，encode() 内部会自动发 0xFC 使能命令，
@@ -163,7 +193,6 @@ void CommTask(void) {
   SendGimbalMotors();
 
   /* ---- 双板帧：G2C（0x211），云台 → 底盘 ---- */
-  auto *comm = GetGimbalChassisComm();
   if (comm != nullptr) {
     auto *imu = GetImu();
     /* delta = 云台朝向 − 车体朝向，用 yaw 电机编码器算。
@@ -176,30 +205,28 @@ void CommTask(void) {
       delta = yaw_motor->angle() - gimbal->yawZero();
     }
     comm->gimbal_data().delta = delta;
-    comm->gimbal_data().remote_ok =
-        !(GetRemoteOffline() != nullptr && GetRemoteOffline()->isOffline());
+    comm->gimbal_data().remote_ok = rc_ok;
     /* 自检通过 = IMU 零漂完成。不能写成“在 Working”，否则两板互相等待。 */
     if (imu != nullptr) {
       comm->gimbal_data().gimbal_ok = imu->isCalibrated();
     }
-    /* 遥控状态：离线或 S2 下档急停，速度指令全 0 */
-    const bool rc_lost =
-        (GetRemoteOffline() != nullptr && GetRemoteOffline()->isOffline());
-    const bool estop = EstopFromS2(g_dbg_rc_r_sw);
+    /* 遥控状态：两路都离线或 S2 下档急停，速度指令全 0 */
+    const bool rc_lost = !rc_ok;
+    const bool estop = EstopFromS2(s2);
 
     /* 云台系速度指令：右摇杆平移（前 / 左为正）、拨轮自旋 */
     float vx = 0.0f;
     float vy = 0.0f;
     float spin = 0.0f;
     if (!rc_lost && !estop) {
-      vx = kMaxLinearSpeed * ScaleStick(g_dbg_rc_rv);
-      vy = -kMaxLinearSpeed * ScaleStick(g_dbg_rc_rh);
-      spin = kMaxSpin * ScaleStick(g_dbg_rc_wheel);
+      vx = kMaxLinearSpeed * ScaleStick(rv);
+      vy = -kMaxLinearSpeed * ScaleStick(rh);
+      spin = kMaxSpin * ScaleStick(wheel);
     }
     comm->gimbal_data().vx = vx;
     comm->gimbal_data().vy = vy;
     comm->gimbal_data().spin = spin;
-    comm->gimbal_data().mode = ModeFromS1(g_dbg_rc_l_sw);
+    comm->gimbal_data().mode = ModeFromS1(s1);
     comm->gimbal_data().estop = estop;
 
     g_dbg_g2c_vx = vx;
@@ -214,7 +241,7 @@ void CommTask(void) {
                           (sys->lifeState() == robot::LifeState::kWorking) &&
                           !rc_lost && !estop;
     if (gimbal != nullptr) {
-      gimbal->updateStick(g_dbg_rc_lv, g_dbg_rc_lh, stick_on);
+      gimbal->updateStick(lv, lh, stick_on);
     }
 
     uint8_t comm_buf[8] = {0};
@@ -224,10 +251,10 @@ void CommTask(void) {
     g_dbg_delta = comm->gimbal_data().delta;
   }
 
-  /* ---- 调试：CAN1 发送状态与错误状态 ---- */
+  /* ---- 调试：板间总线（CAN1）发送状态与错误状态 ---- */
   g_dbg_can1_tsr = CAN1->TSR;
   g_dbg_can1_esr = CAN1->ESR;
-  g_dbg_can1_free = HAL_CAN_GetTxMailboxesFreeLevel(GIMBAL_MOTOR_CAN);
+  g_dbg_can1_free = HAL_CAN_GetTxMailboxesFreeLevel(GIMBAL_COMM_CAN);
 
   /* ---- 喂狗 ---- */
   HAL_IWDG_Refresh(&hiwdg);
@@ -244,11 +271,11 @@ void CommTask(void) {
 static void SendGimbalMotors(void) {
   uint8_t buf[8] = {0};
 
-  /* pitch: id = 1 */
+  /* pitch: id = 1，在 CAN2（云台分电板） */
   auto *pitch = GetMotorPitch();
   if (pitch != nullptr) {
     if (pitch->encode(buf)) {
-      CAN_Send_Msg(GIMBAL_MOTOR_CAN, buf, static_cast<uint32_t>(kPitchMotorId),
+      CAN_Send_Msg(GIMBAL_PITCH_CAN, buf, static_cast<uint32_t>(kPitchMotorId),
                    8);
       g_gimbal_tx_cnt = g_gimbal_tx_cnt + 1;
     } else {
@@ -256,11 +283,11 @@ static void SendGimbalMotors(void) {
     }
   }
 
-  /* yaw: id = 2 */
+  /* yaw: id = 2，在 CAN1（滑环网络） */
   auto *yaw = GetMotorYaw();
   if (yaw != nullptr) {
     if (yaw->encode(buf)) {
-      CAN_Send_Msg(GIMBAL_MOTOR_CAN, buf, static_cast<uint32_t>(kYawMotorId), 8);
+      CAN_Send_Msg(GIMBAL_YAW_CAN, buf, static_cast<uint32_t>(kYawMotorId), 8);
       g_gimbal_tx_cnt = g_gimbal_tx_cnt + 1;
     } else {
       g_gimbal_tx_fail = g_gimbal_tx_fail + 1;

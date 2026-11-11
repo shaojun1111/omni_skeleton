@@ -82,7 +82,8 @@ bool Robot::isReady(void) const
   if (!imu_->isCalibrated()) {
     return false;
   }
-  if (rc_offline_->isOffline()) {
+  /* 本板 DBUS 或底盘转发（接收机在底盘板）任一在线即可 */
+  if (rc_offline_->isOffline() && !comm_->chassis_data().remote_ok) {
     return false;
   }
   if (comm_->isOffline()) {

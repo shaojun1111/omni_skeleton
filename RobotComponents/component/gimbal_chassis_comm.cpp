@@ -33,7 +33,7 @@ constexpr float kVxScale = 1000.0f;     ///< 1e-3 m/s
 constexpr float kVyScale = 1000.0f;     ///< 1e-3 m/s
 constexpr float kDeltaScale = 10000.0f; ///< 1e-4 rad
 constexpr float kSpinScale = 20.0f;     ///< 0.05 rad/s → 乘 20
-constexpr float kYawScale = 10000.0f;   ///< 1e-4 rad
+constexpr float kStickScale = 100.0f;   ///< 摇杆 1/100
 
 /* 浮点 → int16：先钳位到对称范围，再四舍五入 */
 int16_t ToI16(float x)
@@ -102,8 +102,9 @@ void robot::GimbalChassisComm::encode(uint8_t tx_data[8])
   }
 
   if (code_part_ == CodePart::Chassis) {
-    /* C2G（0x210）：yaw + life_state + flags */
-    PutI16(&tx_data[0], ToI16(chassis_data_.chassis_yaw * kYawScale));
+    /* C2G（0x210）：左/右摇杆 + life_state + flags + 拨轮 + 拨杆 */
+    tx_data[0] = static_cast<uint8_t>(ToI8(chassis_data_.lv * kStickScale));
+    tx_data[1] = static_cast<uint8_t>(ToI8(chassis_data_.lh * kStickScale));
     tx_data[2] = static_cast<uint8_t>(chassis_data_.life_state);
 
     uint8_t flags = 0;
@@ -113,7 +114,16 @@ void robot::GimbalChassisComm::encode(uint8_t tx_data[8])
     if (chassis_data_.imu_ok) {
       flags |= 0x02u;
     }
+    if (chassis_data_.remote_ok) {
+      flags |= 0x04u;
+    }
     tx_data[3] = flags;
+
+    tx_data[4] = static_cast<uint8_t>(ToI8(chassis_data_.rv * kStickScale));
+    tx_data[5] = static_cast<uint8_t>(ToI8(chassis_data_.rh * kStickScale));
+    tx_data[6] = static_cast<uint8_t>(ToI8(chassis_data_.wheel * kStickScale));
+    tx_data[7] = static_cast<uint8_t>((chassis_data_.s1 & 0x0Fu) |
+                                      ((chassis_data_.s2 & 0x0Fu) << 4));
   } else {
     /* G2C（0x211）：vx / vy / delta / spin / flags */
     PutI16(&tx_data[0], ToI16(gimbal_data_.vx * kVxScale));
@@ -161,13 +171,25 @@ void robot::GimbalChassisComm::decode(const uint8_t rx_data[8])
         static_cast<ChassisMode>(static_cast<uint8_t>((flags >> 3) & 0x03u));
   } else {
     /* 云台板收到 C2G（0x210）→ 写 chassis_data_ */
-    chassis_data_.chassis_yaw =
-        static_cast<float>(GetI16(&rx_data[0])) / kYawScale;
+    chassis_data_.lv =
+        static_cast<float>(static_cast<int8_t>(rx_data[0])) / kStickScale;
+    chassis_data_.lh =
+        static_cast<float>(static_cast<int8_t>(rx_data[1])) / kStickScale;
     chassis_data_.life_state = static_cast<LifeState>(rx_data[2]);
 
     const uint8_t flags = rx_data[3];
     chassis_data_.chassis_ok = (flags & 0x01u) != 0;
     chassis_data_.imu_ok = (flags & 0x02u) != 0;
+    chassis_data_.remote_ok = (flags & 0x04u) != 0;
+
+    chassis_data_.rv =
+        static_cast<float>(static_cast<int8_t>(rx_data[4])) / kStickScale;
+    chassis_data_.rh =
+        static_cast<float>(static_cast<int8_t>(rx_data[5])) / kStickScale;
+    chassis_data_.wheel =
+        static_cast<float>(static_cast<int8_t>(rx_data[6])) / kStickScale;
+    chassis_data_.s1 = static_cast<uint8_t>(rx_data[7] & 0x0Fu);
+    chassis_data_.s2 = static_cast<uint8_t>((rx_data[7] >> 4) & 0x0Fu);
   }
 
   last_rx_tick_ = hello_world::tick::GetTickMs();

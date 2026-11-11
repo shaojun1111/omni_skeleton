@@ -42,10 +42,19 @@ class GimbalChassisComm {
 
   /* 底盘→云台（C2G，0x210）帧数据。 */
   struct ChassisData {
-    float chassis_yaw = 0.0f;                  ///< 底盘 IMU yaw，rad
+    /* 摇杆/拨轮 [-1, 1]；拨杆原始档位（1=上，3=中，2=下）。
+     * 接收机插在底盘板时，摇杆随本帧转给云台，云台据此算控制量。 */
+    float lv = 0.0f;
+    float lh = 0.0f;
+    float rv = 0.0f;
+    float rh = 0.0f;
+    float wheel = 0.0f;
+    uint8_t s1 = 1;
+    uint8_t s2 = 1;
     LifeState life_state = LifeState::kDead;   ///< 底盘生命状态
     bool chassis_ok = false;                   ///< 底盘已初始化
     bool imu_ok = false;                       ///< 底盘 IMU 零漂完成
+    bool remote_ok = false;                    ///< 遥控在线（接收机在底盘板时转给云台）
   };
 
   /* 云台→底盘（G2C，0x211）帧数据。 */

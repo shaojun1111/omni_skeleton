@@ -8,7 +8,7 @@
  *  V1.1.0      2026-11-11      lishaojun       2. 补齐 USART3 空闲中断 + DMA 接收 DT7
  *******************************************************************************
  * @attention :
- *  1. CAN1/CAN2 分工是"工作假设"，基地确认后可能要改。
+ *  1. CAN1 = 2 路滑环（板间帧 + 云台 yaw）；CAN2 = 底盘分电板（4×M3508）。
  *  2. 4 个 M3508 共用同一个 8 字节 buffer，只发一次 0x200。
  *  3. 遥控接收机接 USART3（100kbps / 9bit / 偶校验）；回调末尾必须重启接收，
  *     否则只收到一帧。
@@ -94,7 +94,7 @@ void CommTask(void) {
   }
 
   if (has_motor) {
-    CAN_Send_Msg(&hcan2, motor_buf, 0x200, 8);  // ⚠️ CAN2 为工作假设
+    CAN_Send_Msg(&hcan2, motor_buf, 0x200, 8);  // 轮电机在底盘 CAN2
     ++g_send_cnt;
   }
 
@@ -103,18 +103,32 @@ void CommTask(void) {
   if (comm != nullptr) {
     auto *imu = GetImu();
     if (imu != nullptr) {
-      comm->chassis_data().chassis_yaw = imu->yaw();
       comm->chassis_data().imu_ok = imu->isCalibrated();
       /* 自检通过 = IMU 零漂完成。不能写成“在 Working”，否则两板互相等待。 */
       comm->chassis_data().chassis_ok = imu->isCalibrated();
     }
+    /* 接收机在本板：摇杆/拨杆随 C2G 转给云台，云台用它算控制量 */
+    auto *rc = GetRemoteControl();
+    if (rc != nullptr) {
+      comm->chassis_data().lv = rc->rc_lv();
+      comm->chassis_data().lh = rc->rc_lh();
+      comm->chassis_data().rv = rc->rc_rv();
+      comm->chassis_data().rh = rc->rc_rh();
+      comm->chassis_data().wheel = rc->rc_wheel();
+      comm->chassis_data().s1 = static_cast<uint8_t>(rc->rc_l_switch());
+      comm->chassis_data().s2 = static_cast<uint8_t>(rc->rc_r_switch());
+    }
     auto *robot = GetRobot();
     comm->chassis_data().life_state =
         (robot != nullptr) ? robot->lifeState() : robot::LifeState::kDead;
+    /* 遥控在线后转发给云台：接收机可能插在底盘板上 */
+    auto *rc_offline = GetRemoteOffline();
+    comm->chassis_data().remote_ok =
+        (rc_offline != nullptr) && !rc_offline->isOffline();
 
     uint8_t comm_buf[8] = {0};
     comm->encode(comm_buf);
-    CAN_Send_Msg(&hcan2, comm_buf, comm->tx_id(), 8);
+    CAN_Send_Msg(&hcan1, comm_buf, comm->tx_id(), 8);  // 板间帧走滑环 CAN1
     g_comm_tx_cnt = g_comm_tx_cnt + 1;
   }
 

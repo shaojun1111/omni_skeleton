@@ -108,7 +108,7 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
       const uint32_t id = rx_header1.StdId;
       g_dbg_last_rx_id = id;
 
-      /* 底盘板 CAN1 = 双板帧（工作假设，基地确认） */
+      /* 底盘板 CAN1 = 2 路滑环，接收云台 G2C 帧 */
       auto *comm = GetGimbalChassisComm();
       if (comm != nullptr && id == 0x211) {  // G2C: 云台 -> 底盘
         comm->decode(can1_rx_data);
