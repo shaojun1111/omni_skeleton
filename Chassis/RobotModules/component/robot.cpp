@@ -155,7 +155,8 @@ void Robot::updateWorking(void)
 
   /* 模式、δ、速度指令全部来自云台转发：分离 / 跟随 / 小陀螺在这里分流 */
   chassis_->setMode(g.mode);
-  chassis_->setDelta(g.delta);
+  /* δ 未标定前按 0 处理：平移留在车体系，至少方向不会因错符号镜像 */
+  chassis_->setDelta(g.delta_valid ? g.delta : 0.0f);
   chassis_->setTarget(ChassisState{g.vx, g.vy, g.spin});
 }
 

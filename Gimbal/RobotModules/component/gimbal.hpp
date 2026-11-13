@@ -72,18 +72,44 @@ class Gimbal
   float pitchOutput(void) const { return pitch_out_; }
 
   /**
-   * @brief 云台朝向零位（init() 时的 yaw 反馈角）
-   * @note  底盘用 delta = yaw->angle() - yawZero() 把云台系速度转到车体系
+   * @brief 云台相对车头的偏航角 δ（逆时针为正），底盘用它把云台系速度转到车体系
+   * @note  δ = k * (yaw_joint - yawZero)，k 的符号/量程由 IMU 自学习得到
    */
-  float yawZero(void) const { return yaw_zero_; }
+  float yawDelta(void) const { return delta_; }
+
+  /**
+   * @brief δ 是否可用：关节零位已记录，且 k 的符号已用 IMU 标定
+   * @note  为假时底盘按 δ = 0 处理（车体系平移），避免用错符号把方向搞反
+   */
+  bool deltaValid(void) const { return yaw_zero_valid_ && sign_latched_; }
+
+  /* 调试：自学习到的 k（IMU yaw 增量 / 关节角增量），未标定时返回 0 */
+  float yawJointScale(void) const { return sign_latched_ ? yaw_scale_ : 0.0f; }
 
  private:
+  /**
+   * @brief 用「关节在动、IMU yaw 也在动」的样本回归出 k = Δimu_yaw / Δjoint
+   * @note  只在关节有明显转动时累计；R² 不够高（底盘同时在转）就放弃本次样本
+   */
+  void updateYawScale(float yaw_joint);
+
   GimbalState target_{};
   float yaw_fb_ = 0.0f;     ///< yaw 反馈角，rad
   float pitch_fb_ = 0.0f;   ///< pitch 反馈角，rad
   float yaw_out_ = 0.0f;    ///< yaw 输出力矩，N·m
   float pitch_out_ = 0.0f;  ///< pitch 输出力矩，N·m
-  float yaw_zero_ = 0.0f;   ///< 云台朝向零位，rad（init() 时记录）
+  float yaw_zero_ = 0.0f;   ///< 云台朝向零位，rad（第一帧反馈时记录）
+  bool yaw_zero_valid_ = false;  ///< 零位是否已记录
+  float delta_ = 0.0f;      ///< 最近一次算出的 δ，rad
+
+  float yaw_scale_ = -1.0f;     ///< 关节角 → 世界 yaw 的比例（含符号）
+  bool sign_latched_ = false;   ///< yaw_scale_ 是否已由 IMU 标定锁定
+  float sum_jj_ = 0.0f;         ///< Σ Δjoint²
+  float sum_jy_ = 0.0f;         ///< Σ Δjoint·Δimu_yaw
+  float sum_yy_ = 0.0f;         ///< Σ Δimu_yaw²
+  float sum_travel_ = 0.0f;     ///< Σ |Δjoint|，累计关节行程（rad）
+  float last_joint_ = 0.0f;     ///< 上一周期关节角
+  float last_imu_yaw_ = 0.0f;   ///< 上一周期 IMU yaw
 
   float stick_yaw_ = 0.0f;    ///< 摇杆积分出的 yaw 目标，rad
   float stick_pitch_ = 0.0f;  ///< 摇杆给出的 pitch 目标，rad

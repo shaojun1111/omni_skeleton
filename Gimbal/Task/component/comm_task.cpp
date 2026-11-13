@@ -110,6 +110,8 @@ volatile uint32_t g_gimbal_tx_cnt = 0;  ///< 云台电机帧发送次数（2 帧
 volatile uint32_t g_gimbal_tx_fail = 0; ///< encode() 失败次数（非 0 说明模式未就绪）
 volatile uint32_t g_comm_tx_cnt = 0;    ///< 双板帧发送次数
 volatile float g_dbg_delta = 0.0f;      ///< 发给底盘的 delta（调试）
+volatile uint8_t g_dbg_delta_valid = 0; ///< δ 是否可用（零位已记 + 符号已标定）
+volatile float g_dbg_yaw_scale = 0.0f;  ///< 自学习到的 k = Δimu_yaw / Δ关节角
 volatile float g_dbg_g2c_vx = 0.0f;    ///< 下发的云台系 vx，m/s
 volatile float g_dbg_g2c_vy = 0.0f;    ///< 下发的云台系 vy，m/s
 volatile float g_dbg_g2c_spin = 0.0f;  ///< 下发的自旋角速度，rad/s
@@ -195,16 +197,18 @@ void CommTask(void) {
   /* ---- 双板帧：G2C（0x211），云台 → 底盘 ---- */
   if (comm != nullptr) {
     auto *imu = GetImu();
-    /* delta = 云台朝向 − 车体朝向，用 yaw 电机编码器算。
-     * 云台板 IMU 跟着云台动，安装倾角不固定，不能用来算 yaw。
-     * 对方离线时归零：此时没有可信的车体基准。 */
+    /* delta = 云台朝向 − 车体朝向：关节编码器给角度，零位在第一帧反馈时记录。
+     * 关节角的正负/量程由 Gimbal 用云台板 IMU 增量自标定，不用 IMU 直接当 yaw
+     * （IMU 安装倾角不固定）。 */
     auto *gimbal = GetGimbal();
-    auto *yaw_motor = GetMotorYaw();
-    float delta = 0.0f;
-    if (!comm->isOffline() && gimbal != nullptr && yaw_motor != nullptr) {
-      delta = yaw_motor->angle() - gimbal->yawZero();
-    }
-    comm->gimbal_data().delta = delta;
+    /* δ 由 Gimbal 用关节零位 + IMU 自标定的符号/量程算出；
+     * 标定完成前 delta_valid = false，底盘按 δ = 0 处理。 */
+    const bool delta_valid = (gimbal != nullptr) && gimbal->deltaValid();
+    comm->gimbal_data().delta = delta_valid ? gimbal->yawDelta() : 0.0f;
+    comm->gimbal_data().delta_valid = delta_valid;
+    g_dbg_delta_valid = delta_valid ? 1u : 0u;
+    g_dbg_yaw_scale =
+        (gimbal != nullptr) ? gimbal->yawJointScale() : 0.0f;
     comm->gimbal_data().remote_ok = rc_ok;
     /* 自检通过 = IMU 零漂完成。不能写成“在 Working”，否则两板互相等待。 */
     if (imu != nullptr) {
@@ -219,8 +223,10 @@ void CommTask(void) {
     float vy = 0.0f;
     float spin = 0.0f;
     if (!rc_lost && !estop) {
+      /* 横轴符号以实车为准：原先 vy 取负号时右推摇杆车往左走，
+       * 改成 + 后与「右推向右」一致。 */
       vx = kMaxLinearSpeed * ScaleStick(rv);
-      vy = -kMaxLinearSpeed * ScaleStick(rh);
+      vy = kMaxLinearSpeed * ScaleStick(rh);
       spin = kMaxSpin * ScaleStick(wheel);
     }
     comm->gimbal_data().vx = vx;

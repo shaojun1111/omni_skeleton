@@ -293,6 +293,9 @@ class DaMiao : public Motor
   // 电机是否使能
   bool is_enabled(void) const { return dm_status_.is_enabled; }
 
+  // 是否已收到过反馈帧（在此之前 angle() 仍是初值 0，不能当零位用）
+  bool hasFeedback(void) const { return feedback_received_; }
+
   // 电机当前控制模式
   CtrlMode current_ctrl_mode(void) const { return dm_status_.current_ctrl_mode; }
 
@@ -433,6 +436,9 @@ class DaMiao : public Motor
 
     float vel_input = 0.0f;  ///* 速度模式输入
   } comm_data_;
+
+  /* 是否已收到过反馈帧 */
+  bool feedback_received_ = false;
 
   /* 最近一次 encode 后应使用的发送 CAN ID */
   uint32_t tx_id_ = 0;

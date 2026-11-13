@@ -20,6 +20,8 @@
 #include "gimbal.hpp"
 
 #include "base.hpp"
+#include "imu.hpp"
+#include "ins_imu.hpp"
 #include "ins_motor.hpp"
 #include "ins_pid.hpp"
 #include "motor.hpp"
@@ -35,6 +37,19 @@ constexpr float kDt = 0.001f;        ///< 控制周期，s
 constexpr float kPitchMin = -0.7f;   ///< pitch 下限，rad（约 -40°）
 constexpr float kPitchMax = 0.7f;    ///< pitch 上限，rad（约 +40°）
 constexpr float kYawStickGain = 2.5f;  ///< 左摇杆满杆 yaw 角速度，rad/s
+
+/* yaw 关节角 → 世界 yaw 的比例 k 自标定参数。
+ * 单周期增量小于 kCalMinStep 视为没动，大于 kCalMaxStep 视为跳变（丢帧/回绕）。 */
+constexpr float kCalMinStep = 2e-4f;    ///< 0.2 rad/s 以下不采样
+constexpr float kCalMaxStep = 0.05f;    ///< 单周期 0.05 rad 以上判跳变
+constexpr float kCalMinTravel = 0.25f;  ///< 累计关节行程门槛，rad
+constexpr float kCalMinR2 = 0.95f;      ///< 拟合决定系数门槛
+constexpr float kCalMinScale = 0.1f;    ///< k 的合理下限（4 倍量程误差约 0.25）
+constexpr float kCalMaxScale = 10.0f;   ///< k 的合理上限
+
+/* δ 的固定偏置：实测前推时车往枪口右侧偏，δ 整体少了一个常数。
+ * 在云台系（世界角）上直接补，与 k 的符号/量程无关。 */
+constexpr float kYawDeltaTrim = 112.5f * 3.14159265f / 180.0f;  ///< +112.5°
 
 }  // namespace
 
@@ -59,8 +74,21 @@ void Gimbal::init(void)
   target_.yaw = yaw_fb_;
   target_.pitch = hello_world::Bound(pitch_fb_, kPitchMin, kPitchMax);
 
-  /* 记录云台朝向零位：上电时云台正对车头 */
-  yaw_zero_ = yaw_fb_;
+  /* 零位不能在这里记：此时电机多半还没回过帧，angle() 还是 0，
+   * 记下来 δ 就等于关节绝对角加了一个随机常量。改为 update() 里第一帧反馈到达时记。 */
+  yaw_zero_ = 0.0f;
+  yaw_zero_valid_ = false;
+  delta_ = 0.0f;
+
+  /* 方向/量程自标定状态清零；k 先用经验值，标定成功后覆盖 */
+  yaw_scale_ = -1.0f;
+  sign_latched_ = false;
+  sum_jj_ = 0.0f;
+  sum_jy_ = 0.0f;
+  sum_yy_ = 0.0f;
+  sum_travel_ = 0.0f;
+  last_joint_ = yaw_fb_;
+  last_imu_yaw_ = 0.0f;
 
   /* 摇杆目标起点与当前角一致，接管时不跳 */
   stick_yaw_ = yaw_fb_;
@@ -128,6 +156,25 @@ void Gimbal::update(void)
   yaw_fb_ = yaw_motor->angle();
   pitch_fb_ = pitch_motor->angle();
 
+  /* 第一帧关节反馈到达后才记录零位：之前 angle() 还是 0 */
+  if (!yaw_zero_valid_) {
+    if (static_cast<hello_world::motor::DaMiao *>(yaw_motor)->hasFeedback()) {
+      yaw_zero_ = yaw_fb_;
+      yaw_zero_valid_ = true;
+      /* 目标同步到当前角，避免位置环把关节拉回 0 */
+      target_.yaw = yaw_fb_;
+      stick_yaw_ = yaw_fb_;
+      last_joint_ = yaw_fb_;
+      auto *imu = GetImu();
+      last_imu_yaw_ = (imu != nullptr) ? imu->yaw() : 0.0f;
+    }
+  } else {
+    updateYawScale(yaw_fb_);
+  }
+
+  /* δ 的符号与量程都在 yaw_scale_ 里，不能直接拿关节角差当 δ */
+  delta_ = yaw_scale_ * (yaw_fb_ - yaw_zero_) + kYawDeltaTrim;
+
   /* 摇杆接管时目标来自摇杆，否则用 setTarget() 下发的目标 */
   const float yaw_goal = stick_active_ ? stick_yaw_ : target_.yaw;
   const float pitch_goal = stick_active_ ? stick_pitch_ : target_.pitch;
@@ -183,6 +230,63 @@ void Gimbal::stop(void)
     static_cast<hello_world::motor::DaMiao *>(pitch_motor)
         ->setMitInput(pitch_fb_, 0.0f, 0.0f, 0.0f, 0.0f);
   }
+}
+
+void Gimbal::updateYawScale(float yaw_joint)
+{
+  auto *imu = GetImu();
+
+  /* IMU 未标定：只跟着刷新基准，不采样 */
+  if (imu == nullptr || !imu->isCalibrated()) {
+    last_joint_ = yaw_joint;
+    last_imu_yaw_ = (imu != nullptr) ? imu->yaw() : 0.0f;
+    return;
+  }
+
+  const float dj = yaw_joint - last_joint_;
+  const float dy = hello_world::AngleNormRad(imu->yaw() - last_imu_yaw_);
+  last_joint_ = yaw_joint;
+  last_imu_yaw_ = imu->yaw();
+
+  if (sign_latched_) {
+    return;
+  }
+
+  /* 关节没动时 dy 全是噪声；跳变时 dy 混进了丢帧，都不采样 */
+  const float abs_dj = (dj < 0.0f) ? -dj : dj;
+  if (abs_dj < kCalMinStep || abs_dj > kCalMaxStep) {
+    return;
+  }
+
+  sum_jj_ += dj * dj;
+  sum_jy_ += dj * dy;
+  sum_yy_ += dy * dy;
+  sum_travel_ += abs_dj;
+
+  if (sum_travel_ < kCalMinTravel) {
+    return;
+  }
+
+  /* k = Σ(j·y)/Σ(j·j)，R² 用 Σ 形式算，不必保存每个样本 */
+  const float k = sum_jy_ / sum_jj_;
+  const float abs_k = (k < 0.0f) ? -k : k;
+  float r2 = 0.0f;
+  if (sum_yy_ > 0.0f) {
+    r2 = (sum_jy_ * sum_jy_) / (sum_jj_ * sum_yy_);
+  }
+
+  if (r2 < kCalMinR2 || abs_k < kCalMinScale || abs_k > kCalMaxScale) {
+    /* 样本被底盘转动污染或量程离谱：清空重来 */
+    sum_jj_ = 0.0f;
+    sum_jy_ = 0.0f;
+    sum_yy_ = 0.0f;
+    sum_travel_ = 0.0f;
+    return;
+  }
+
+  /* 量程也取拟合值：若电机反馈角被 PMAX 缩放，这里会得到 ≈4 或 ≈0.25 */
+  yaw_scale_ = k;
+  sign_latched_ = true;
 }
 
 }  // namespace robot

@@ -67,6 +67,7 @@ class GimbalChassisComm {
     bool remote_ok = false;                     ///< 遥控在线
     bool estop = false;                         ///< 急停请求
     bool gimbal_ok = false;                     ///< 云台已初始化
+    bool delta_valid = false;  ///< delta 可用（零位已记 + 方向已标定）
   };
 
   GimbalChassisComm(CodePart code_part, uint32_t tx_id, uint32_t rx_id);

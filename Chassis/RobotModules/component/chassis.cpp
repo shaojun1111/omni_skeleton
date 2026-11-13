@@ -35,8 +35,11 @@ namespace
 
 constexpr float kDt = 0.001f;           ///< 控制周期，s
 constexpr float kMaxWheelSpeed = 3.0f;  ///< 轮缘速度上限，m/s
-/* δ 符号：实测车体方向与预期相反时改成 -1.0f */
-constexpr float kDeltaSign = 1.0f;
+/* δ 符号：实测车体方向与预期相反时改成 -1.0f。
+ * 2026-11-13 实车：枪口顺时针转，指令前进方向却逆时针转，取 -1 后一致。
+ * 这与遥控 vy 反号是同一个根因：本车车体系的左右/旋转方向与文档约定镜像，
+ * 所以跟随环的 δ 测量值也要用同一个符号。 */
+constexpr float kDeltaSign = -1.0f;
 
 constexpr float kMaxVx = 3.0f;  ///< 车体前后速度上限，m/s
 constexpr float kMaxVy = 3.0f;  ///< 车体左右速度上限，m/s
@@ -125,8 +128,11 @@ void Chassis::update(void)
   float w = 0.0f;
 
   if (enabled_) {
+    /* 车体系实际左右约定与文档镜像，δ 与跟随测量值都要乘 kDeltaSign */
+    const float delta_body = kDeltaSign * delta_;
+
     hello_world::chassis_ik_solver::rotateToBody(
-        target_.vx, target_.vy, kDeltaSign * delta_, &vx_b, &vy_b);
+        target_.vx, target_.vy, delta_body, &vx_b, &vy_b);
 
     /* 2. 按模式解出 w：平移都是云台系旋转到车体系，差别只在自旋项 */
     switch (mode_) {
@@ -134,10 +140,10 @@ void Chassis::update(void)
         auto *follow_pid = GetPidChassisFollow();
         if (follow_pid != nullptr) {
           /* 跟随：车头追云台朝向，目标 δ = 0。
-           * δ > 0 说明云台偏到车头左侧，车头要逆时针(+)转才追得上；
-           * PID 按 e = target − measure 求误差，所以把 −δ 当作测量值送入，
-           * 输出即 +w。被控对象 dδ/dt = −w，闭环收敛到 δ = 0。 */
-          w = follow_pid->calc(0.0f, -delta_, kDt);
+           * delta_body > 0 说明云台偏到车头左侧，车头要逆时针(+)转才追得上；
+           * PID 按 e = target − measure 求误差，所以把 −delta_body 当作测量值
+           * 送入，输出即 +w。被控对象 dδ/dt = −w，闭环收敛到 δ = 0。 */
+          w = follow_pid->calc(0.0f, -delta_body, kDt);
           w = hello_world::Bound(w, -kMaxFollowW, kMaxFollowW);
         }
         break;

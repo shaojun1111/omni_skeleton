@@ -143,6 +143,9 @@ void robot::GimbalChassisComm::encode(uint8_t tx_data[8])
     if (gimbal_data_.gimbal_ok) {
       flags |= 0x04u;
     }
+    if (gimbal_data_.delta_valid) {
+      flags |= 0x20u;
+    }
     flags |= static_cast<uint8_t>(
         (static_cast<uint8_t>(gimbal_data_.mode) & 0x03u) << 3);
     tx_data[7] = flags;
@@ -167,6 +170,7 @@ void robot::GimbalChassisComm::decode(const uint8_t rx_data[8])
     gimbal_data_.remote_ok = (flags & 0x01u) != 0;
     gimbal_data_.estop = (flags & 0x02u) != 0;
     gimbal_data_.gimbal_ok = (flags & 0x04u) != 0;
+    gimbal_data_.delta_valid = (flags & 0x20u) != 0;
     gimbal_data_.mode =
         static_cast<ChassisMode>(static_cast<uint8_t>((flags >> 3) & 0x03u));
   } else {

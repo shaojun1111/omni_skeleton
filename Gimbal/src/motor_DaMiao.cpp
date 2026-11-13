@@ -243,6 +243,7 @@ bool DaMiao::decodeFdb(const uint8_t* data)
   dm_status_.rotor_temp = data[7];
   dm_status_.status_code = static_cast<StatusCode>(data[0] >> 4);
   last_raw_angle_ = raw_angle;
+  feedback_received_ = true;
 
   if (dm_status_.status_code == StatusCode::kMotorEnabled) {
     dm_status_.is_enabled = true;
