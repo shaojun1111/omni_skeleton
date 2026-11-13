@@ -96,6 +96,7 @@ class Chassis
   ChassisState body_cmd_;  ///< 车体系命令，模式解算 + 限幅之后
   float wheel_speed_[4] = {0.0f, 0.0f, 0.0f, 0.0f};  ///< [RF, RB, LB, LF]，m/s
   float delta_ = 0.0f;  ///< 云台相对车头的偏航角，rad
+  float w_cmd_ = 0.0f;  ///< 分离/小陀螺的自旋指令斜坡输出，rad/s
   ChassisMode mode_ = ChassisMode::kSeparate;  ///< 当前底盘模式
   bool enabled_ = false;  ///< setTarget 置位 / stop 清零，为假时输出全零
 };

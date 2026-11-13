@@ -94,6 +94,7 @@ void Gimbal::init(void)
   stick_yaw_ = yaw_fb_;
   stick_pitch_ = target_.pitch;
   stick_active_ = false;
+  world_ref_ = false;
 
   yaw_out_ = 0.0f;
   pitch_out_ = 0.0f;
@@ -130,7 +131,7 @@ void Gimbal::updateStick(float lv, float lh, bool enabled)
 
   if (!stick_active_) {
     /* 接管瞬间从当前反馈角起积分，避免跳变 */
-    stick_yaw_ = yaw_fb_;
+    stick_yaw_ = yawLoopFeedback();
     stick_active_ = true;
   }
 
@@ -141,20 +142,41 @@ void Gimbal::updateStick(float lv, float lh, bool enabled)
   stick_pitch_ = hello_world::Bound(-kPitchMax * lv, kPitchMin, kPitchMax);
 }
 
-void Gimbal::update(void)
+void Gimbal::setWorldRef(bool on) {
+  /* 世界角闭环依赖 k：IMU 未标定或 k 未锁定时继续用关节角 */
+  bool want = on;
+  if (want) {
+    auto *imu = GetImu();
+    if (imu == nullptr || !imu->isCalibrated() || !sign_latched_ ||
+        yaw_scale_ == 0.0f) {
+      want = false;
+    }
+  }
+
+  if (want == world_ref_) {
+    return;
+  }
+
+  world_ref_ = want;
+
+  /* 反馈量换了，清掉 PID 的微分/积分历史，避免切换瞬间冲一下 */
+  auto *yaw_pid = GetPidMotorYaw();
+  if (yaw_pid != nullptr) {
+    yaw_pid->reset();
+  }
+
+  /* 目标对齐到新反馈：进入时用世界角，退出时回到关节角，都不跳 */
+  stick_yaw_ = yawLoopFeedback();
+}
+
+void Gimbal::updateFeedback(void)
 {
   auto *yaw_motor = GetMotorYaw();
-  auto *pitch_motor = GetMotorPitch();
-  auto *yaw_pid = GetPidMotorYaw();
-  auto *pitch_pid = GetPidMotorPitch();
-
-  if (yaw_motor == nullptr || pitch_motor == nullptr || yaw_pid == nullptr ||
-      pitch_pid == nullptr) {
+  if (yaw_motor == nullptr) {
     return;
   }
 
   yaw_fb_ = yaw_motor->angle();
-  pitch_fb_ = pitch_motor->angle();
 
   /* 第一帧关节反馈到达后才记录零位：之前 angle() 还是 0 */
   if (!yaw_zero_valid_) {
@@ -174,15 +196,52 @@ void Gimbal::update(void)
 
   /* δ 的符号与量程都在 yaw_scale_ 里，不能直接拿关节角差当 δ */
   delta_ = yaw_scale_ * (yaw_fb_ - yaw_zero_) + kYawDeltaTrim;
+}
 
-  /* 摇杆接管时目标来自摇杆，否则用 setTarget() 下发的目标 */
-  const float yaw_goal = stick_active_ ? stick_yaw_ : target_.yaw;
+void Gimbal::update(void)
+{
+  auto *yaw_motor = GetMotorYaw();
+  auto *pitch_motor = GetMotorPitch();
+  auto *yaw_pid = GetPidMotorYaw();
+  auto *pitch_pid = GetPidMotorPitch();
+
+  if (yaw_motor == nullptr || pitch_motor == nullptr || yaw_pid == nullptr ||
+      pitch_pid == nullptr) {
+    return;
+  }
+
+  updateFeedback();
+  pitch_fb_ = pitch_motor->angle();
+
+  /* 世界角闭环：反馈换成 IMU 世界角（折算成关节等效角），底盘自转时枪口保持指向 */
+  auto *imu = GetImu();
+  const bool world_hold =
+      world_ref_ && (imu != nullptr) && (yaw_scale_ != 0.0f);
+
+  /* 摇杆接管时目标来自摇杆；否则用 setTarget() 下发的目标。
+   * 世界角闭环下没有摇杆接管时，目标取当前世界角，即保持指向。 */
+  float yaw_goal = stick_active_ ? stick_yaw_ : target_.yaw;
+  if (world_ref_ && !stick_active_) {
+    yaw_goal = world_hold ? imu->yaw() / yaw_scale_ : yaw_fb_;
+  }
   const float pitch_goal = stick_active_ ? stick_pitch_ : target_.pitch;
 
   /* yaw：把目标投影到当前圈，误差落在 [-π, π) */
-  const float yaw_target_near =
-      yaw_fb_ + hello_world::AngleNormRad(yaw_goal - yaw_fb_);
-  yaw_out_ = yaw_pid->calc(yaw_target_near, yaw_fb_, kDt);
+  float yaw_fb_loop = yaw_fb_;
+  float yaw_target_near = 0.0f;
+  if (world_hold) {
+    /* 世界角误差先归一化，再折回关节等效角：|k| ≠ 1 时 ±π 附近也选对分支 */
+    const float fb_world = imu->yaw();
+    const float goal_world = yaw_goal * yaw_scale_;
+    yaw_fb_loop = fb_world / yaw_scale_;
+    yaw_target_near = yaw_fb_loop +
+                      hello_world::AngleNormRad(goal_world - fb_world) /
+                          yaw_scale_;
+  } else {
+    yaw_target_near =
+        yaw_fb_loop + hello_world::AngleNormRad(yaw_goal - yaw_fb_loop);
+  }
+  yaw_out_ = yaw_pid->calc(yaw_target_near, yaw_fb_loop, kDt);
 
   /* pitch：目标已在 setTarget() / updateStick() 钳位，这里再钳一次 */
   const float pitch_target =
@@ -208,6 +267,8 @@ void Gimbal::stop(void)
 
   /* 交还目标控制权：下次接管先用当时的反馈角对齐 */
   stick_active_ = false;
+  /* 停车即退出世界角闭环，恢复时重新对齐 */
+  world_ref_ = false;
 
   if (yaw_pid != nullptr) {
     yaw_pid->reset();
@@ -230,6 +291,18 @@ void Gimbal::stop(void)
     static_cast<hello_world::motor::DaMiao *>(pitch_motor)
         ->setMitInput(pitch_fb_, 0.0f, 0.0f, 0.0f, 0.0f);
   }
+}
+
+float Gimbal::yawLoopFeedback(void) const
+{
+  if (world_ref_) {
+    auto *imu = GetImu();
+    if (imu != nullptr && yaw_scale_ != 0.0f) {
+      /* imu_yaw = k * 关节角 + 常数，除以 k 后与关节角同量纲 */
+      return imu->yaw() / yaw_scale_;
+    }
+  }
+  return yaw_fb_;
 }
 
 void Gimbal::updateYawScale(float yaw_joint)

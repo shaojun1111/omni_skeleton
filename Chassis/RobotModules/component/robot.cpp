@@ -74,9 +74,14 @@ void Robot::update(void)
       break;
   }
 
-  /* 所有状态都下发一次，保证 CAN 帧和 PID 连续 */
+  /* 失效即归零：只有 Working 才跑控制环；Dead / Resurrection 每周期强制零输出，
+   * 不能只在进 Dead 的那一周期 stop()，否则 update() 会把速度环算回去。 */
   if (chassis_ != nullptr) {
-    chassis_->update();
+    if (state_ == LifeState::kWorking) {
+      chassis_->update();
+    } else {
+      chassis_->stop();
+    }
   }
 }
 
@@ -125,10 +130,7 @@ void Robot::enterWorking(void)
 
 void Robot::updateResurrection(void)
 {
-  if (chassis_ != nullptr) {
-    chassis_->stop();
-  }
-
+  /* 输出归零由 update() 末尾的非 Working 分支每周期负责 */
   if (!isReady()) {
     ready_cnt_ = 0;
     return;

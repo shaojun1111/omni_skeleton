@@ -33,6 +33,7 @@
 #include "ins_imu.hpp"
 #include "ins_motor.hpp"
 #include "ins_robot.hpp"
+#include "main_task.hpp"
 #include "motor.hpp"
 #include "offline_checker.hpp"
 #include "robot.hpp"
@@ -50,6 +51,10 @@ volatile uint32_t g_comm_tx_fail = 0;  ///< 双板帧发送失败次数
 volatile uint32_t g_dbg_can1_tsr = 0;   ///< CAN1->TSR，发送状态
 volatile uint32_t g_dbg_can1_esr = 0;   ///< CAN1->ESR，错误状态
 volatile uint32_t g_dbg_can1_free = 0;  ///< CAN1 空闲发送邮箱数（0~3）
+
+/* 看门狗喂狗开关：Ozone 里置 0 即停止刷新，约 300ms 后复位（验收演示用） */
+volatile uint8_t g_iwdg_feed_enable = 1;
+volatile uint32_t g_iwdg_feed_cnt = 0;  ///< 实际喂狗次数，正常约 1000/s
 
 /* ---- 遥控 DBUS ---- */
 /* 接收缓冲（18 字节），DMA 直接写入，无需手动搬运 */
@@ -141,8 +146,16 @@ void CommTask(void) {
   auto *rc_offline = GetRemoteOffline();
   g_dbg_rc_offline = (rc_offline != nullptr && rc_offline->isOffline()) ? 1 : 0;
 
-  /* ---- 喂狗 ---- */
-  HAL_IWDG_Refresh(&hiwdg);
+  /* ---- 喂狗 ----
+   * 1. g_iwdg_feed_enable 置 0：验收演示开关，停止刷新等 IWDG 复位。
+   * 2. 心跳门控：MainTask 没跑过就不喂；主任务卡死由看门狗复位。
+   * 3. 放在 CommTask 末尾：本周期所有发送都完成才认为这一拍是健康的。 */
+  static uint32_t last_beat = 0;
+  if (g_iwdg_feed_enable != 0 && g_main_task_beat != last_beat) {
+    last_beat = g_main_task_beat;
+    HAL_IWDG_Refresh(&hiwdg);
+    g_iwdg_feed_cnt = g_iwdg_feed_cnt + 1;
+  }
 }
 
 /* Private function definitions ----------------------------------------------*/

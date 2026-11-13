@@ -31,6 +31,7 @@
 #include "ins_imu.hpp"
 #include "ins_motor.hpp"
 #include "ins_robot.hpp"
+#include "main_task.hpp"
 #include "offline_checker.hpp"
 #include "robot.hpp"
 
@@ -116,11 +117,16 @@ volatile float g_dbg_g2c_vx = 0.0f;    ///< 下发的云台系 vx，m/s
 volatile float g_dbg_g2c_vy = 0.0f;    ///< 下发的云台系 vy，m/s
 volatile float g_dbg_g2c_spin = 0.0f;  ///< 下发的自旋角速度，rad/s
 volatile uint8_t g_dbg_g2c_mode = 0;   ///< 下发的底盘模式（0/1/2）
+volatile uint8_t g_dbg_spin_hold = 0;  ///< 小陀螺世界角闭环是否生效
 
 /* 调试寄存器：CAN1 发送/错误状态 */
 volatile uint32_t g_dbg_can1_tsr = 0;   ///< CAN1->TSR，发送状态
 volatile uint32_t g_dbg_can1_esr = 0;   ///< CAN1->ESR，错误状态
 volatile uint32_t g_dbg_can1_free = 0;  ///< CAN1 空闲发送邮箱数（0~3）
+
+/* 看门狗喂狗开关：Ozone 里置 0 即停止刷新，约 600ms 后复位（验收演示用） */
+volatile uint8_t g_iwdg_feed_enable = 1;
+volatile uint32_t g_iwdg_feed_cnt = 0;  ///< 实际喂狗次数，正常约 1000/s
 
 /* Private function prototypes -----------------------------------------------*/
 static void SendGimbalMotors(void);
@@ -247,7 +253,14 @@ void CommTask(void) {
                           (sys->lifeState() == robot::LifeState::kWorking) &&
                           !rc_lost && !estop;
     if (gimbal != nullptr) {
+      /* 跟随 / 小陀螺：底盘会自己转，云台必须按 IMU 世界角闭环。
+       * 只有枪口在世界上保持指向，底盘转过去时关节角才会变、δ 才会收敛；
+       * 否则云台被底盘带着转，δ 恒定，跟随环等于开环。 */
+      const auto mode = comm->gimbal_data().mode;
+      gimbal->setWorldRef(stick_on && (mode == robot::ChassisMode::kSpin ||
+                                       mode == robot::ChassisMode::kFollow));
       gimbal->updateStick(lv, lh, stick_on);
+      g_dbg_spin_hold = gimbal->worldRefActive() ? 1u : 0u;
     }
 
     uint8_t comm_buf[8] = {0};
@@ -262,8 +275,16 @@ void CommTask(void) {
   g_dbg_can1_esr = CAN1->ESR;
   g_dbg_can1_free = HAL_CAN_GetTxMailboxesFreeLevel(GIMBAL_COMM_CAN);
 
-  /* ---- 喂狗 ---- */
-  HAL_IWDG_Refresh(&hiwdg);
+  /* ---- 喂狗 ----
+   * 1. g_iwdg_feed_enable 置 0：验收演示开关，停止刷新等 IWDG 复位。
+   * 2. 心跳门控：MainTask 没跑过就不喂；主任务卡死由看门狗复位。
+   * 3. 放在 CommTask 末尾：本周期所有发送都完成才认为这一拍是健康的。 */
+  static uint32_t last_beat = 0;
+  if (g_iwdg_feed_enable != 0 && g_main_task_beat != last_beat) {
+    last_beat = g_main_task_beat;
+    HAL_IWDG_Refresh(&hiwdg);
+    g_iwdg_feed_cnt = g_iwdg_feed_cnt + 1;
+  }
 }
 
 /* Private function definitions ----------------------------------------------*/

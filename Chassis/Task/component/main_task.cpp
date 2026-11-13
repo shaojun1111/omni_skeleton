@@ -57,6 +57,9 @@ volatile uint8_t g_dbg_imu_err = 0;        ///< BMI088 初始化错误位
 volatile uint8_t g_dbg_life_state = 0;   ///< 0=Dead 1=Resurrection 2=Working
 volatile uint32_t g_dbg_ready_cnt = 0;   ///< 就绪条件连续满足的周期数
 
+/* 看门狗喂狗门控：MainTask 跑完才 +1，CommTask 只有看到心跳变化才刷新 IWDG */
+volatile uint32_t g_main_task_beat = 0;  ///< 主任务心跳
+
 /* External variables --------------------------------------------------------*/
 /* Private function prototypes -----------------------------------------------*/
 /* Exported function definitions ---------------------------------------------*/
@@ -119,6 +122,9 @@ void MainTask(void) {
     g_dbg_ready_cnt = robot->readyCount();
   }
 #endif
+
+  /* 心跳放最后：跑到这里说明本轮计算全部完成 */
+  g_main_task_beat = g_main_task_beat + 1;
 }
 
 /* Private function definitions ----------------------------------------------*/

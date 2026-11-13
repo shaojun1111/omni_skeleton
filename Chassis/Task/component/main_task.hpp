@@ -17,6 +17,7 @@
 #define CHASSIS_TASK_MAIN_TASK_HPP_
 
 /* Includes ------------------------------------------------------------------*/
+#include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -26,5 +27,8 @@ void MainTask(void);
 #ifdef __cplusplus
 }
 #endif
+
+/* 主任务心跳：每个 1ms 周期 +1，CommTask 用它确认 MainTask 跑过再喂狗 */
+extern volatile uint32_t g_main_task_beat;
 
 #endif /* CHASSIS_TASK_MAIN_TASK_HPP_ */

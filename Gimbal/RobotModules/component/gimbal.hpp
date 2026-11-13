@@ -7,11 +7,17 @@
  *  V0.9.0      yyyy-mm-dd      <author>        1. <note>
  *  V1.0.0      2026-11-08      lishaojun       1. 初版：角度差 → PID → MIT 力矩
  *  V1.1.0      2026-11-11      lishaojun       2. 遥控摇杆接管 yaw / pitch 目标
+ *  V1.2.0      2026-11-14      lishaojun       3. 小陀螺：yaw 改用 IMU 世界角闭环
  *******************************************************************************
  * @attention :
  *  1. yaw 连续旋转，目标角在 update() 里投影到当前圈再交给 PID。
  *  2. pitch 在 setTarget() 里做软件限位，防止顶结构。
  *  3. update() 每 1ms 调用一次。
+ *  4. 跟随 / 小陀螺模式下 yaw 反馈从关节角换成 IMU 世界角（除以 k 折算成关节
+ *     等效角），底盘自转时枪口保持指向；这也让 δ 能随底盘转动而变、跟随环才闭合。
+ *     停车 / 回到分离模式时切回关节角。
+ *  5. updateFeedback() 只读反馈、算 δ，任何生命状态都可每周期调用；
+ *     电机输出只由 update() / stop() 决定，失效归零不影响零位和 k 的标定。
  *******************************************************************************
  *  Copyright (c) 2024 Hello World Team, Zhejiang University.
  *  All Rights Reserved.
@@ -55,8 +61,23 @@ class Gimbal
   void updateStick(float lv, float lh, bool enabled);
 
   /**
-   * @brief 周期任务：读反馈 → 算误差 → PID → setMitInput
-   * @note  每 1ms 调用一次
+   * @brief 世界角闭环开关：打开后 yaw 改用 IMU 世界角闭环，枪口在世界上保持指向
+   * @param on true = 跟随 / 小陀螺（底盘会自己转）；false = 回到关节角闭环
+   * @note  每 1ms 调用一次。IMU 未标定或 k 未锁定时不生效（继续用关节角）。
+   *        切换时目标会重新对齐到新的反馈量，不会跳变。
+   */
+  void setWorldRef(bool on);
+
+  /**
+   * @brief 每周期测量：读 yaw 反馈、第一帧锁零位、自标定 k、更新 δ
+   * @note  不写电机、不跑控制环，Dead / Resurrection 也可以调用。
+   *        零位和 k 不依赖生命状态，失效归零只停输出，不改变前进方向。
+   */
+  void updateFeedback(void);
+
+  /**
+   * @brief 周期任务：算误差 → PID → setMitInput
+   * @note  每 1ms 调用一次；内部先调 updateFeedback() 刷新反馈与 δ
    */
   void update(void);
 
@@ -86,12 +107,22 @@ class Gimbal
   /* 调试：自学习到的 k（IMU yaw 增量 / 关节角增量），未标定时返回 0 */
   float yawJointScale(void) const { return sign_latched_ ? yaw_scale_ : 0.0f; }
 
+  /* 调试：世界角闭环是否生效 */
+  bool worldRefActive(void) const { return world_ref_; }
+
  private:
   /**
    * @brief 用「关节在动、IMU yaw 也在动」的样本回归出 k = Δimu_yaw / Δjoint
    * @note  只在关节有明显转动时累计；R² 不够高（底盘同时在转）就放弃本次样本
    */
   void updateYawScale(float yaw_joint);
+
+  /**
+   * @brief yaw 环当前用的反馈角（关节等效角）
+   * @return 关节角；小陀螺模式且 k 已锁定时返回 IMU yaw / k
+   * @note  imu_yaw = k * 关节角 + 常数，除以 k 后与关节角同量纲，PID 参数不用改
+   */
+  float yawLoopFeedback(void) const;
 
   GimbalState target_{};
   float yaw_fb_ = 0.0f;     ///< yaw 反馈角，rad
@@ -111,9 +142,10 @@ class Gimbal
   float last_joint_ = 0.0f;     ///< 上一周期关节角
   float last_imu_yaw_ = 0.0f;   ///< 上一周期 IMU yaw
 
-  float stick_yaw_ = 0.0f;    ///< 摇杆积分出的 yaw 目标，rad
+  float stick_yaw_ = 0.0f;    ///< 摇杆积分出的 yaw 目标，rad（小陀螺下为关节等效角）
   float stick_pitch_ = 0.0f;  ///< 摇杆给出的 pitch 目标，rad
   bool stick_active_ = false;  ///< 摇杆是否接管目标
+  bool world_ref_ = false;     ///< 世界角闭环是否生效
 };
 
 }  // namespace robot

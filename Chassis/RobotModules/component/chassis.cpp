@@ -45,6 +45,9 @@ constexpr float kMaxVx = 3.0f;  ///< 车体前后速度上限，m/s
 constexpr float kMaxVy = 3.0f;  ///< 车体左右速度上限，m/s
 /* 自旋上限取 8.0，比云台侧 spin 编码上限（±6.35 rad/s）宽，不截断正常指令 */
 constexpr float kMaxW = 8.0f;
+/* 分离/小陀螺的自旋指令变化率上限，rad/s²：进出小陀螺档位时平滑起停，
+ * 拨轮在档位切换瞬间不会把 6 rad/s 直接阶跃给四轮 */
+constexpr float kMaxWAccel = 15.0f;
 /* 跟随模式回正角速度上限，rad/s；车头追尾摆得太大或太肉时现场调这个 */
 constexpr float kMaxFollowW = 6.0f;
 
@@ -66,6 +69,7 @@ void Chassis::init(void)
   target_ = ChassisState{};
   body_cmd_ = ChassisState{};
   delta_ = 0.0f;
+  w_cmd_ = 0.0f;
   mode_ = ChassisMode::kSeparate;
   enabled_ = false;
 
@@ -108,6 +112,9 @@ void Chassis::setMode(ChassisMode mode)
   if (follow_pid != nullptr) {
     follow_pid->reset();
   }
+
+  /* 自旋斜坡从 0 重新起：从跟随切到小陀螺时不会沿用旧值 */
+  w_cmd_ = 0.0f;
 }
 
 void Chassis::setDelta(float delta)
@@ -150,11 +157,17 @@ void Chassis::update(void)
       }
       case ChassisMode::kSeparate:
       case ChassisMode::kSpin:
-      default:
-        /* 分离 / 小陀螺：w 直接取云台下发的 spin，不做自动回正；
-         * 两者的差别在云台侧摇杆怎么映射到 spin，底盘侧都是直通。 */
-        w = target_.w;
+      default: {
+        /* 分离 / 小陀螺：w 取云台下发的 spin，不做自动回正。
+         * 斜坡限幅保证进/出档位时自旋平滑建立和退出。 */
+        const float w_target = hello_world::Bound(target_.w, -kMaxW, kMaxW);
+        const float step = kMaxWAccel * kDt;
+        const float dw =
+            hello_world::Bound(w_target - w_cmd_, -step, step);
+        w_cmd_ = w_cmd_ + dw;
+        w = w_cmd_;
         break;
+      }
     }
 
     /* 3. 进逆解前限幅 */
@@ -200,6 +213,7 @@ void Chassis::stop(void)
 {
   target_ = ChassisState{};
   body_cmd_ = ChassisState{};
+  w_cmd_ = 0.0f;
   enabled_ = false;
 
   auto *follow_pid = GetPidChassisFollow();

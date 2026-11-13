@@ -68,8 +68,16 @@ void Robot::update(void)
       break;
   }
 
+  /* 失效即归零：只有 Working 才跑控制环；Dead / Resurrection 每周期强制零输出，
+   * 不能只在进 Dead 的那一周期 stop()，否则后面的 update() 又把力矩算回去。
+   * 反馈与 δ 仍每周期更新：只读编码器/IMU，不写电机，零位和 k 不随状态漂移。 */
   if (gimbal_ != nullptr) {
-    gimbal_->update();
+    if (state_ == LifeState::kWorking) {
+      gimbal_->update();
+    } else {
+      gimbal_->updateFeedback();
+      gimbal_->stop();
+    }
   }
 }
 
@@ -113,13 +121,11 @@ void Robot::enterWorking(void)
 
 void Robot::updateResurrection(void)
 {
-  if (gimbal_ != nullptr) {
-    /* 第一帧反馈到达后再对齐角度；之前 angle() 还是初值 0 */
-    if (!gimbal_inited_) {
-      gimbal_->init();
-      gimbal_inited_ = true;
-    }
-    gimbal_->stop();
+  if (gimbal_ != nullptr && !gimbal_inited_) {
+    /* 第一帧反馈到达后再对齐角度；之前 angle() 还是初值 0。
+     * 输出归零由 update() 末尾的非 Working 分支每周期负责。 */
+    gimbal_->init();
+    gimbal_inited_ = true;
   }
 
   if (!isReady()) {
